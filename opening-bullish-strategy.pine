@@ -1,0 +1,78 @@
+//@version=6
+strategy("寄付陽線 1本ホールド [期間指定・遅い寄り付き対応]", 
+         overlay=true, 
+         default_qty_type=strategy.percent_of_equity, 
+         default_qty_value=100,
+         commission_type=strategy.commission.percent,
+         commission_value=0.1)  // 手数料は必要に応じて調整・削除可
+
+// === 入力設定 ===
+sessionInput = input.session("0900-1530", "取引セッション (デフォルト: 9:00-15:30)")
+
+// === バックテスト期間 ===
+startYear  = input.int(2026, "開始年",  minval=2000, maxval=2100, group="バックテスト期間")
+startMonth = input.int(4,    "開始月",  minval=1,    maxval=12,   group="バックテスト期間")
+startDay   = input.int(1,    "開始日",  minval=1,    maxval=31,   group="バックテスト期間")
+
+endYear    = input.int(2026, "終了年",  minval=2000, maxval=2100, group="バックテスト期間")
+endMonth   = input.int(4,    "終了月",  minval=1,    maxval=12,   group="バックテスト期間")
+endDay     = input.int(26,   "終了日",  minval=1,    maxval=31,   group="バックテスト期間")  // 本日（2026/4/26）に合わせて調整してください
+
+useFilter  = input.bool(true, "寄付初陽線のみエントリー", group="戦略設定")
+
+// === 期間内判定 ===
+startDate = timestamp(startYear, startMonth, startDay, 0, 0)
+endDate   = timestamp(endYear, endMonth, endDay, 23, 59)
+inDateRange = time >= startDate and time <= endDate
+
+// === セッション内判定 ===
+inSession = not na(time(timeframe.period, sessionInput))
+
+// === その日の最初の取引足を検出（9:00寄り付きでも遅い寄り付きでも対応） ===
+newDay = timeframe.change("1D")
+isFirstCandleOfDay = inSession and newDay
+
+// === 陽線判定 ===
+isBullish = close > open
+
+// === エントリー条件（期間内 + その日の初足 + 陽線） ===
+longCondition = isFirstCandleOfDay and isBullish and useFilter and inDateRange
+
+// === エントリー（成行ロング） ===
+if (longCondition)
+    strategy.entry("Long寄付陽線", strategy.long)
+
+// === エグジット（次の足が確定したタイミングで成行クローズ） ===
+if (strategy.position_size > 0 and isFirstCandleOfDay[1])
+    strategy.close("Long寄付陽線", comment="1本エグジット")
+
+// === 期間終了時の強制クローズ ===
+if (strategy.position_size > 0 and not inDateRange)
+    strategy.close_all(comment="期間終了 強制クローズ")
+
+// === ビジュアル表示 ===
+bgcolor(isFirstCandleOfDay and inDateRange ? color.new(color.yellow, 80) : na, title="その日の初足ハイライト")
+
+plotshape(longCondition, 
+          title="エントリーシグナル", 
+          location=location.belowbar, 
+          color=color.lime, 
+          style=shape.triangleup, 
+          size=size.normal)
+
+// 確認用ラベル
+if (isFirstCandleOfDay and inDateRange)
+    label.new(bar_index, high, 
+              text = isBullish ? "陽線\nエントリー" : "陰線", 
+              color = isBullish ? color.new(color.green, 0) : color.new(color.red, 0),
+              style = label.style_label_down, 
+              textcolor = color.white,
+              size = size.small)
+
+// エグジットマーク
+plotshape(strategy.position_size > 0 and isFirstCandleOfDay[1], 
+          title="エグジット", 
+          location=location.abovebar, 
+          color=color.red, 
+          style=shape.triangledown, 
+          size=size.small)
