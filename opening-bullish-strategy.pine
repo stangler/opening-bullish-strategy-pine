@@ -1,24 +1,112 @@
 //@version=6
-strategy("寄付09:00入 09:05出 統計", overlay=true, process_orders_on_close=true)
+strategy("寄付09:00入 09:01/03/05出 ギャップ別統計", overlay=true, process_orders_on_close=true)
+
+// --- 時間足選択入力 ---
+timeframe_choice = input.string("5分足", "時間足選択", options=["1分足", "3分足", "5分足"])
 
 // --- 期間入力 ---
 start_date = input.time(timestamp("2026-04-01 00:00"), "開始日")
-end_date   = input.time(timestamp("2026-04-26 23:59"), "終了日") // 本日まで
+end_date   = input.time(timestamp("2026-04-26 23:59"), "終了日")
+gap_threshold_pct = input.float(0.1, "ギャップ閾値（%）")
 
 // --- 判定ロジック ---
 in_range = time >= start_date and time <= end_date
-is_first = timeframe.change("D") and in_range
 
-// 09:00始値エントリー（前日最終足で予約 → 当日始値約定）
+// 現在の時間足が1分・3分・5分かを判定
+is_1min = timeframe.period == "1"
+is_3min = timeframe.period == "3"
+is_5min = timeframe.period == "5"
+
+// 当日最初の足を特定（1分足 or 3分足 or 5分足）
+is_first_1min = is_1min and timeframe.change("D") and in_range
+is_first_3min = is_3min and timeframe.change("D") and in_range
+is_first_5min = is_5min and timeframe.change("D") and in_range
+is_first = is_first_1min or is_first_3min or is_first_5min
+
+// 前日終値（日足の前日終値）
+prev_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+// 当日始値
+today_open = is_first ? open : na
+
+// ギャップ判定
+gap_threshold = gap_threshold_pct / 100.0
+gap_pct = (today_open - prev_close) / prev_close
+
+is_gap_up   = gap_pct >  gap_threshold
+is_gap_down = gap_pct < -gap_threshold
+is_continuation = not is_gap_up and not is_gap_down
+
+// --- エントリー（前日最終足で予約） ---
 if timeframe.change("D")[1] and in_range
-    strategy.entry("Entry", strategy.long)
+    // パターン別にエントリーIDを分ける（統計を分けるため）
+    if is_gap_up
+        strategy.entry("GapUp_Entry", strategy.long)
+    else if is_gap_down
+        strategy.entry("GapDown_Entry", strategy.long)
+    else if is_continuation
+        strategy.entry("Continuation_Entry", strategy.long)
 
-// 09:00足確定（09:05）で即エグジット
+// --- 09:01 or 09:03 or 09:05 でエグジット ---
 if is_first
-    strategy.close("Entry")
+    strategy.close("GapUp_Entry")
+    strategy.close("GapDown_Entry")
+    strategy.close("Continuation_Entry")
 
-// --- 結果表示（陽線判定） ---
+// --- 結果表示（パターン別ラベル） ---
 is_bull = close > open
+
 if is_first
-    label.new(bar_index, high, is_bull ? "陽線\n(始値<終値)" : "陰線\n(始値>終値)", 
-         color=is_bull ? color.green : color.red, textcolor=color.white)
+    string pattern_text = "不明"
+    color  pattern_color = color.gray
+
+    if is_gap_up
+        pattern_text := "ギャップアップ"
+        pattern_color := color.blue
+    else if is_gap_down
+        pattern_text := "ギャップダウン"
+        pattern_color := color.orange
+    else if is_continuation
+        pattern_text := "続き足"
+        pattern_color := color.purple
+
+    string result_text = pattern_text + "\n" + (is_bull ? "陽線" : "陰線")
+    color  result_color = is_bull ? color.green : color.red
+
+    label.new(bar_index, high, result_text, 
+         color=result_color, textcolor=color.white,
+         style=label.style_label_up, yloc=yloc.abovebar)
+
+// --- パターン別カウンタ（陽線・陰線本数） ---
+var int gap_up_bull   = 0
+var int gap_up_bear   = 0
+var int gap_down_bull = 0
+var int gap_down_bear = 0
+var int cont_bull     = 0
+var int cont_bear     = 0
+
+if is_first
+    if is_gap_up
+        if is_bull
+            gap_up_bull := gap_up_bull + 1
+        else
+            gap_up_bear := gap_up_bear + 1
+    else if is_gap_down
+        if is_bull
+            gap_down_bull := gap_down_bull + 1
+        else
+            gap_down_bear := gap_down_bear + 1
+    else if is_continuation
+        if is_bull
+            cont_bull := cont_bull + 1
+        else
+            cont_bear := cont_bear + 1
+
+// --- 全体の陽線・陰線本数 ---
+total_bull = gap_up_bull + gap_down_bull + cont_bull
+total_bear = gap_up_bear + gap_down_bear + cont_bear
+
+// --- 最終足で集計表示 ---
+if barstate.islast
+    string stats_text = "ギャップアップ: 陽" + str.tostring(gap_up_bull) + " / 陰" + str.tostring(gap_up_bear) + "\n" + "ギャップダウン: 陽" + str.tostring(gap_down_bull) + " / 陰" + str.tostring(gap_down_bear) + "\n" + "続き足: 陽" + str.tostring(cont_bull) + " / 陰" + str.tostring(cont_bear) + "\n" + "合計: 陽" + str.tostring(total_bull) + " / 陰" + str.tostring(total_bear)
+    label.new(bar_index, low, stats_text, color=color.black, textcolor=color.white, style=label.style_label_down)
