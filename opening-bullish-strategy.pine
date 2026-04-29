@@ -48,10 +48,15 @@ var float am_session_close = na
 if is_last_am
     am_session_close := close
 
-is_pm_open = in_range and (
-     (is_1min and hour == 12 and minute == 30) or
-     (is_3min and hour == 12 and minute == 30) or
-     (is_5min and hour == 12 and minute == 30))
+var bool pm_fired_today = false
+
+if timeframe.change("D")
+    pm_fired_today := false
+
+is_pm_open = in_range and not pm_fired_today and (is_1min or is_3min or is_5min) and hour == 12 and minute >= 30
+
+if is_pm_open
+    pm_fired_today := true
 
 var float pm_gap_pct = na
 if is_pm_open and not na(am_session_close)
