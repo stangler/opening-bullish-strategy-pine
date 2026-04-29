@@ -1,5 +1,5 @@
 //@version=6
-strategy("寄付ギャップ別統計",
+strategy("寄付強気戦略",
      overlay=true, process_orders_on_close=true)
 
 // 入力
