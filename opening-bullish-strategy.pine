@@ -1,112 +1,245 @@
 //@version=6
-strategy("寄付09:00入 09:01/03/05出 ギャップ別統計", overlay=true, process_orders_on_close=true)
+strategy("寄付ギャップ別統計",
+     overlay=true, process_orders_on_close=true)
 
-// --- 時間足選択入力 ---
-timeframe_choice = input.string("5分足", "時間足選択", options=["1分足", "3分足", "5分足"])
-
-// --- 期間入力 ---
-start_date = input.time(timestamp("2026-04-01 00:00"), "開始日")
-end_date   = input.time(timestamp("2026-04-26 23:59"), "終了日")
+// 入力
+use_am            = input.bool(true,  "前場 09:00 有効", group="セッション設定")
+use_pm            = input.bool(true,  "後場 12:30 有効", group="セッション設定")
+start_date        = input.time(timestamp("2026-04-01 00:00"), "開始日")
+end_date          = input.time(timestamp("2026-04-26 23:59"), "終了日")
 gap_threshold_pct = input.float(0.1, "ギャップ閾値（%）")
+showTable         = input.bool(true,  "レポートテーブル表示", group="レポート設定")
 
-// --- 判定ロジック ---
-in_range = time >= start_date and time <= end_date
+// 基本
+in_range       = time >= start_date and time <= end_date
+is_1min        = timeframe.period == "1"
+is_3min        = timeframe.period == "3"
+is_5min        = timeframe.period == "5"
+gap_th         = gap_threshold_pct / 100.0
+prev_day_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
 
-// 現在の時間足が1分・3分・5分かを判定
-is_1min = timeframe.period == "1"
-is_3min = timeframe.period == "3"
-is_5min = timeframe.period == "5"
+// 午前 09:00
+is_am_open = (is_1min or is_3min or is_5min) and timeframe.change("D") and in_range
 
-// 当日最初の足を特定（1分足 or 3分足 or 5分足）
-is_first_1min = is_1min and timeframe.change("D") and in_range
-is_first_3min = is_3min and timeframe.change("D") and in_range
-is_first_5min = is_5min and timeframe.change("D") and in_range
-is_first = is_first_1min or is_first_3min or is_first_5min
+var float am_gap_pct = na
+if is_am_open
+    am_gap_pct := (open - prev_day_close) / prev_day_close
 
-// 前日終値（日足の前日終値）
-prev_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+am_gap_up   = not na(am_gap_pct) and am_gap_pct >  gap_th
+am_gap_down = not na(am_gap_pct) and am_gap_pct < -gap_th
+am_cont     = not na(am_gap_pct) and not am_gap_up and not am_gap_down
+am_bull     = close > open
 
-// 当日始値
-today_open = is_first ? open : na
+// 後場 12:30
+is_last_am = in_range and (
+     (is_1min and hour == 11 and minute == 29) or
+     (is_3min and hour == 11 and minute == 27) or
+     (is_5min and hour == 11 and minute == 25))
 
-// ギャップ判定
-gap_threshold = gap_threshold_pct / 100.0
-gap_pct = (today_open - prev_close) / prev_close
+var float am_session_close = na
+if is_last_am
+    am_session_close := close
 
-is_gap_up   = gap_pct >  gap_threshold
-is_gap_down = gap_pct < -gap_threshold
-is_continuation = not is_gap_up and not is_gap_down
+is_pm_open = in_range and (
+     (is_1min and hour == 12 and minute == 30) or
+     (is_3min and hour == 12 and minute == 30) or
+     (is_5min and hour == 12 and minute == 30))
 
-// --- エントリー（前日最終足で予約） ---
-if timeframe.change("D")[1] and in_range
-    // パターン別にエントリーIDを分ける（統計を分けるため）
-    if is_gap_up
-        strategy.entry("GapUp_Entry", strategy.long)
-    else if is_gap_down
-        strategy.entry("GapDown_Entry", strategy.long)
-    else if is_continuation
-        strategy.entry("Continuation_Entry", strategy.long)
+var float pm_gap_pct = na
+if is_pm_open and not na(am_session_close)
+    pm_gap_pct := (open - am_session_close) / am_session_close
 
-// --- 09:01 or 09:03 or 09:05 でエグジット ---
-if is_first
-    strategy.close("GapUp_Entry")
-    strategy.close("GapDown_Entry")
-    strategy.close("Continuation_Entry")
+pm_gap_up   = not na(pm_gap_pct) and pm_gap_pct >  gap_th
+pm_gap_down = not na(pm_gap_pct) and pm_gap_pct < -gap_th
+pm_cont     = not na(pm_gap_pct) and not pm_gap_up and not pm_gap_down
+pm_bull     = close > open
 
-// --- 結果表示（パターン別ラベル） ---
-is_bull = close > open
+// エントリー / エグジット
+if use_am and is_am_open
+    strategy.entry("AM", strategy.long)
+    strategy.close("AM", immediately=true)
 
-if is_first
-    string pattern_text = "不明"
-    color  pattern_color = color.gray
+if use_pm and is_last_am
+    strategy.entry("PM", strategy.long)
+if use_pm and is_pm_open
+    strategy.close("PM", immediately=true)
 
-    if is_gap_up
-        pattern_text := "ギャップアップ"
-        pattern_color := color.blue
-    else if is_gap_down
-        pattern_text := "ギャップダウン"
-        pattern_color := color.orange
-    else if is_continuation
-        pattern_text := "続き足"
-        pattern_color := color.purple
+// カウンタ (AM)
+var int   am_gu_bull = 0
+var int   am_gu_bear = 0
+var int   am_gd_bull = 0
+var int   am_gd_bear = 0
+var int   am_co_bull = 0
+var int   am_co_bear = 0
+var float am_gu_pnl  = 0.0
+var float am_gd_pnl  = 0.0
+var float am_co_pnl  = 0.0
 
-    string result_text = pattern_text + "\n" + (is_bull ? "陽線" : "陰線")
-    color  result_color = is_bull ? color.green : color.red
+if use_am and is_am_open
+    float pnl = close - open
+    if am_gap_up
+        am_gu_pnl += pnl
+        am_gu_bull += am_bull ? 1 : 0
+        am_gu_bear += am_bull ? 0 : 1
+    else if am_gap_down
+        am_gd_pnl += pnl
+        am_gd_bull += am_bull ? 1 : 0
+        am_gd_bear += am_bull ? 0 : 1
+    else if am_cont
+        am_co_pnl += pnl
+        am_co_bull += am_bull ? 1 : 0
+        am_co_bear += am_bull ? 0 : 1
 
-    label.new(bar_index, high, result_text, 
-         color=result_color, textcolor=color.white,
-         style=label.style_label_up, yloc=yloc.abovebar)
+// カウンタ (PM)
+var int   pm_gu_bull = 0
+var int   pm_gu_bear = 0
+var int   pm_gd_bull = 0
+var int   pm_gd_bear = 0
+var int   pm_co_bull = 0
+var int   pm_co_bear = 0
+var float pm_gu_pnl  = 0.0
+var float pm_gd_pnl  = 0.0
+var float pm_co_pnl  = 0.0
 
-// --- パターン別カウンタ（陽線・陰線本数） ---
-var int gap_up_bull   = 0
-var int gap_up_bear   = 0
-var int gap_down_bull = 0
-var int gap_down_bear = 0
-var int cont_bull     = 0
-var int cont_bear     = 0
+if use_pm and is_pm_open
+    float pnl = close - open
+    if pm_gap_up
+        pm_gu_pnl += pnl
+        pm_gu_bull += pm_bull ? 1 : 0
+        pm_gu_bear += pm_bull ? 0 : 1
+    else if pm_gap_down
+        pm_gd_pnl += pnl
+        pm_gd_bull += pm_bull ? 1 : 0
+        pm_gd_bear += pm_bull ? 0 : 1
+    else if pm_cont
+        pm_co_pnl += pnl
+        pm_co_bull += pm_bull ? 1 : 0
+        pm_co_bear += pm_bull ? 0 : 1
 
-if is_first
-    if is_gap_up
-        if is_bull
-            gap_up_bull := gap_up_bull + 1
-        else
-            gap_up_bear := gap_up_bear + 1
-    else if is_gap_down
-        if is_bull
-            gap_down_bull := gap_down_bull + 1
-        else
-            gap_down_bear := gap_down_bear + 1
-    else if is_continuation
-        if is_bull
-            cont_bull := cont_bull + 1
-        else
-            cont_bear := cont_bear + 1
+// ラベル
+if use_am and is_am_open and not na(am_gap_pct)
+    string pat = am_gap_up ? "GapUp" : (am_gap_down ? "GapDown" : "Cont")
+    label.new(bar_index, high, "AM " + pat + "\n" + (am_bull ? "陽" : "陰") + " " + str.tostring(math.round(am_gap_pct * 100, 2)) + "%",
+         color=am_bull ? color.green : color.red, textcolor=color.white, style=label.style_label_up, yloc=yloc.abovebar, size=size.small)
 
-// --- 全体の陽線・陰線本数 ---
-total_bull = gap_up_bull + gap_down_bull + cont_bull
-total_bear = gap_up_bear + gap_down_bear + cont_bear
+if use_pm and is_pm_open and not na(pm_gap_pct)
+    string pat = pm_gap_up ? "GapUp" : (pm_gap_down ? "GapDown" : "Cont")
+    label.new(bar_index, high, "PM " + pat + "\n" + (pm_bull ? "陽" : "陰") + " " + str.tostring(math.round(pm_gap_pct * 100, 2)) + "%",
+         color=pm_bull ? color.green : color.red, textcolor=color.white, style=label.style_label_up, yloc=yloc.abovebar, size=size.small)
 
-// --- 最終足で集計表示 ---
-if barstate.islast
-    string stats_text = "ギャップアップ: 陽" + str.tostring(gap_up_bull) + " / 陰" + str.tostring(gap_up_bear) + "\n" + "ギャップダウン: 陽" + str.tostring(gap_down_bull) + " / 陰" + str.tostring(gap_down_bear) + "\n" + "続き足: 陽" + str.tostring(cont_bull) + " / 陰" + str.tostring(cont_bear) + "\n" + "合計: 陽" + str.tostring(total_bull) + " / 陰" + str.tostring(total_bear)
-    label.new(bar_index, low, stats_text, color=color.black, textcolor=color.white, style=label.style_label_down)
+// === ヘルパー関数 ===
+f_wr(bull, bear) =>
+    int tot = bull + bear
+    tot > 0 ? str.tostring(math.round(float(bull) / float(tot) * 100, 1)) + "%" : "—"
+
+f_ev(pnl, bull, bear) =>
+    int tot = bull + bear
+    tot > 0 ? str.tostring(math.round(pnl / float(tot), 1)) : "—"
+
+f_row(tbl, row, lbl, bull, bear, pnl, bg) =>
+    table.cell(tbl, 0, row, lbl, bgcolor=bg, text_color=color.white, text_size=size.normal)
+    table.cell(tbl, 1, row, str.tostring(bull), bgcolor=bg, text_color=color.lime, text_size=size.normal)
+    table.cell(tbl, 2, row, str.tostring(bear), bgcolor=bg, text_color=color.red, text_size=size.normal)
+    table.cell(tbl, 3, row, f_wr(bull, bear), bgcolor=bg, text_color=color.white, text_size=size.normal)
+    table.cell(tbl, 4, row, f_ev(pnl, bull, bear), bgcolor=bg, text_color=color.white, text_size=size.normal)
+
+f_sec(tbl, row, lbl) =>
+    for c = 0 to 4
+        table.cell(tbl, c, row, c == 0 ? lbl : "",
+             bgcolor=color.new(#455a64, 0), text_color=color.white, text_size=size.normal)
+
+// === メイン表（パターン + Stats 縦ドッキング）===
+var table mainTable = table.new(position.top_right, 5, 25,
+     bgcolor=color.new(color.gray, 90), border_width=1,
+     frame_color=color.gray, border_color=color.new(color.gray, 60))
+
+if showTable and (barstate.islastconfirmedhistory or barstate.islast)
+    // パターン表ヘッダー
+    color C_HDR = color.new(#1e88e5, 0)
+    table.cell(mainTable, 0, 0, "パターン", bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, 0, "陽",       bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 2, 0, "陰",       bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 3, 0, "勝率",     bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 4, 0, "EV(円)",   bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
+
+    int row = 1
+
+    if use_am
+        color C_AM = color.new(#1b5e20, 30)
+        f_sec(mainTable, row, "午前 09:00")
+        row += 1
+        f_row(mainTable, row, "GapUp", am_gu_bull, am_gu_bear, am_gu_pnl, C_AM)
+        row += 1
+        f_row(mainTable, row, "GapDown", am_gd_bull, am_gd_bear, am_gd_pnl, C_AM)
+        row += 1
+        f_row(mainTable, row, "Cont", am_co_bull, am_co_bear, am_co_pnl, C_AM)
+        row += 1
+
+    if use_pm
+        color C_PM = color.new(#1a237e, 30)
+        f_sec(mainTable, row, "後場 12:30")
+        row += 1
+        f_row(mainTable, row, "GapUp", pm_gu_bull, pm_gu_bear, pm_gu_pnl, C_PM)
+        row += 1
+        f_row(mainTable, row, "GapDown", pm_gd_bull, pm_gd_bear, pm_gd_pnl, C_PM)
+        row += 1
+        f_row(mainTable, row, "Cont", pm_co_bull, pm_co_bear, pm_co_pnl, C_PM)
+        row += 1
+
+    // Statsセクション
+    color C_STATS = color.new(#4a148c, 30)
+    f_sec(mainTable, row, "Strategy Stats")
+    row += 1
+
+    float max_dd_amount = strategy.max_drawdown
+    float max_dd_pct    = strategy.initial_capital > 0 ? (strategy.max_drawdown / strategy.initial_capital) * 100 : na
+    float pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+    float win_rate = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : 0
+
+    // Stats行
+    table.cell(mainTable, 0, row, "Net Profit", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(strategy.netprofit, "#,###.##"), bgcolor=C_STATS, text_color = strategy.netprofit >= 0 ? color.green : color.red, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Gross Profit", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(strategy.grossprofit, "#,###.##"), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Gross Loss", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(strategy.grossloss, "#,###.##"), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Profit Factor", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, na(pf) ? "—" : str.tostring(pf, "#.##"), bgcolor=C_STATS, text_color = pf >= 1.5 ? color.green : (pf >= 1.0 ? color.orange : color.red), text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Win Rate %", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(win_rate, "#.##") + "%", bgcolor=C_STATS, text_color = win_rate >= 50 ? color.green : color.red, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Total Trades", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(strategy.closedtrades), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Win Trades", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(strategy.wintrades), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Loss Trades", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(strategy.losstrades), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Max Drawdown %", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, na(max_dd_pct) ? "—" : str.tostring(max_dd_pct, "#.##") + "%", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    table.cell(mainTable, 0, row, "Max Drawdown (金額)", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, str.tostring(max_dd_amount, "#,###.##"), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    row += 1
+
+    float dd_profit_ratio = strategy.netprofit != 0 ? (max_dd_amount / strategy.netprofit) * 100 : na
+    table.cell(mainTable, 0, row, "DD/Profit Ratio", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
+    table.cell(mainTable, 1, row, na(dd_profit_ratio) ? "—" : str.tostring(dd_profit_ratio, "#.##") + "%", 
+               bgcolor=C_STATS, 
+               text_color = na(dd_profit_ratio) ? color.white : strategy.netprofit <= 0 ? color.red : dd_profit_ratio > 50 ? color.red : dd_profit_ratio > 30 ? color.orange : color.green, 
+               text_size=size.normal)
