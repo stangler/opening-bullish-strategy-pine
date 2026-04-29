@@ -1,258 +1,187 @@
 //@version=6
-strategy("寄付強気戦略",
-     overlay=true, process_orders_on_close=true)
+strategy("ズレ手法", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
 
 // 入力
-use_am            = input.bool(true,  "前場 09:00 有効", group="セッション設定")
-use_pm            = input.bool(true,  "後場 12:30 有効", group="セッション設定")
-start_date        = input.time(timestamp("2026-04-01 00:00"), "開始日")
-end_date          = input.time(timestamp("2026-04-26 23:59"), "終了日")
-gap_threshold_pct = input.float(0.1, "ギャップ閾値（%）")
-showTable         = input.bool(true,  "レポートテーブル表示", group="レポート設定")
+slTicks        = input.int(10, "SL (ナンピン2からTick数)", minval=1)
+tpTicks        = input.int(5,  "TP (平均取得価格 + Tick数)", minval=1)
+nappin1Ticks   = input.int(10, "ナンピン1 下落Tick（初回から）", minval=1)
+nappin2Ticks   = input.int(10, "ナンピン2 追加下落Tick（ナンピン1から）", minval=1)
+bearCount      = input.int(4,  "陰線本数", minval=2, maxval=6)
+alertPreSignal = input.bool(true, "事前アラート（N-1本陰線）")
 
-// 基本
-in_range       = time >= start_date and time <= end_date
-is_1min        = timeframe.period == "1"
-is_3min        = timeframe.period == "3"
-is_5min        = timeframe.period == "5"
-gap_th         = gap_threshold_pct / 100.0
-prev_day_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+// バックテスト期間
+startDate = input.time(timestamp("2026-04-01 00:00"), "開始日")
+endDate   = input.time(timestamp("2026-04-24 23:59"), "終了日")
+inRange   = time >= startDate and time <= endDate
 
-// 午前 09:00
-is_am_open = (is_1min or is_3min or is_5min) and timeframe.change("D") and in_range
+// 取引時間帯
+tradeStartHour = input.int(9,  "取引開始 時", minval=0, maxval=23)
+tradeStartMin  = input.int(0,  "取引開始 分", minval=0, maxval=59)
+tradeEndHour   = input.int(15, "取引終了 時", minval=0, maxval=23)
+tradeEndMin    = input.int(30, "取引終了 分", minval=0, maxval=59)
 
-var float am_gap_pct = na
-if is_am_open
-    am_gap_pct := (open - prev_day_close) / prev_day_close
+timeOk = (hour > tradeStartHour or (hour == tradeStartHour and minute >= tradeStartMin)) and
+         (hour < tradeEndHour   or (hour == tradeEndHour   and minute <= tradeEndMin))
 
-am_gap_up   = not na(am_gap_pct) and am_gap_pct >  gap_th
-am_gap_down = not na(am_gap_pct) and am_gap_pct < -gap_th
-am_cont     = not na(am_gap_pct) and not am_gap_up and not am_gap_down
-am_bull     = close > open
+// 陰線判定
+bearish(i) => close[i] < open[i]
 
-// 後場 12:30
-is_last_am = in_range and (
-     (is_1min and hour == 11 and minute == 29) or
-     (is_3min and hour == 11 and minute == 27) or
-     (is_5min and hour == 11 and minute == 25))
+// N本連続陰線シグナル
+var signal = false
+if bearCount == 2
+    signal := bearish(0) and bearish(1)
+else if bearCount == 3
+    signal := bearish(0) and bearish(1) and bearish(2)
+else if bearCount == 4
+    signal := bearish(0) and bearish(1) and bearish(2) and bearish(3)
+else if bearCount == 5
+    signal := bearish(0) and bearish(1) and bearish(2) and bearish(3) and bearish(4)
+else if bearCount == 6
+    signal := bearish(0) and bearish(1) and bearish(2) and bearish(3) and bearish(4) and bearish(5)
 
-var float am_session_close = na
-if is_last_am
-    am_session_close := close
+// N-1本陰線（事前シグナル）
+var preSignal = false
+if bearCount == 2
+    preSignal := bearish(0)
+else if bearCount == 3
+    preSignal := bearish(0) and bearish(1)
+else if bearCount == 4
+    preSignal := bearish(0) and bearish(1) and bearish(2)
+else if bearCount == 5
+    preSignal := bearish(0) and bearish(1) and bearish(2) and bearish(3)
+else if bearCount == 6
+    preSignal := bearish(0) and bearish(1) and bearish(2) and bearish(3) and bearish(4)
 
-is_pm_open = in_range and (
-     (is_1min and hour == 12 and minute == 30) or
-     (is_3min and hour == 12 and minute == 30) or
-     (is_5min and hour == 12 and minute == 30))
+// 大引け判定
+eodClose = hour == 15 and minute >= 25
 
-var float pm_gap_pct = na
-if is_pm_open and not na(am_session_close)
-    pm_gap_pct := (open - am_session_close) / am_session_close
+tickSize = syminfo.mintick
 
-pm_gap_up   = not na(pm_gap_pct) and pm_gap_pct >  gap_th
-pm_gap_down = not na(pm_gap_pct) and pm_gap_pct < -gap_th
-pm_cont     = not na(pm_gap_pct) and not pm_gap_up and not pm_gap_down
-pm_bull     = close > open
+// ナンピン管理
+var float entryPrice  = na
+var bool  nappin1Done = false
+var bool  nappin2Done = false
 
-// エントリー / エグジット
-if use_am and is_am_open
-    strategy.entry("AM", strategy.long)
-    strategy.close("AM", immediately=true)
+// リセット（ポジなし）
+if strategy.position_size == 0
+    entryPrice  := na
+    nappin1Done := false
+    nappin2Done := false
 
-if use_pm and is_last_am
-    strategy.entry("PM", strategy.long)
-if use_pm and is_pm_open
-    strategy.close("PM", immediately=true)
+// 初回エントリー価格キャプチャ（初回のみ）
+if strategy.position_size > 0 and na(entryPrice)
+    entryPrice := strategy.position_avg_price
 
-// カウンタ (AM)
-var int   am_gu_bull = 0
-var int   am_gu_bear = 0
-var int   am_gd_bull = 0
-var int   am_gd_bear = 0
-var int   am_co_bull = 0
-var int   am_co_bear = 0
-var float am_gu_pnl  = 0.0
-var float am_gd_pnl  = 0.0
-var float am_co_pnl  = 0.0
+// TP/SL 動的計算
+float avgPrice = strategy.position_avg_price
+float tpPrice  = strategy.position_size > 0 ? avgPrice + tpTicks * tickSize : na
+float slPrice  = na(entryPrice) ? na : entryPrice - (nappin1Ticks + nappin2Ticks + slTicks) * tickSize
 
-if use_am and is_am_open
-    float pnl = close - open
-    if am_gap_up
-        am_gu_pnl += pnl
-        am_gu_bull += am_bull ? 1 : 0
-        am_gu_bear += am_bull ? 0 : 1
-    else if am_gap_down
-        am_gd_pnl += pnl
-        am_gd_bull += am_bull ? 1 : 0
-        am_gd_bear += am_bull ? 0 : 1
-    else if am_cont
-        am_co_pnl += pnl
-        am_co_bull += am_bull ? 1 : 0
-        am_co_bear += am_bull ? 0 : 1
+// TP/SL 判定（毎バー）
+if strategy.position_size > 0 and not eodClose
+    if not na(tpPrice) and high >= tpPrice
+        strategy.close_all(comment="TP")
+    else if not na(slPrice) and low <= slPrice
+        strategy.close_all(comment="SL")
 
-// カウンタ (PM)
-var int   pm_gu_bull = 0
-var int   pm_gu_bear = 0
-var int   pm_gd_bull = 0
-var int   pm_gd_bear = 0
-var int   pm_co_bull = 0
-var int   pm_co_bear = 0
-var float pm_gu_pnl  = 0.0
-var float pm_gd_pnl  = 0.0
-var float pm_co_pnl  = 0.0
+// 大引け強制決済
+if eodClose and strategy.position_size > 0
+    strategy.close_all(comment="大引け")
 
-if use_pm and is_pm_open
-    float pnl = close - open
-    if pm_gap_up
-        pm_gu_pnl += pnl
-        pm_gu_bull += pm_bull ? 1 : 0
-        pm_gu_bear += pm_bull ? 0 : 1
-    else if pm_gap_down
-        pm_gd_pnl += pnl
-        pm_gd_bull += pm_bull ? 1 : 0
-        pm_gd_bear += pm_bull ? 0 : 1
-    else if pm_cont
-        pm_co_pnl += pnl
-        pm_co_bull += pm_bull ? 1 : 0
-        pm_co_bear += pm_bull ? 0 : 1
+// 初回エントリー
+if signal and strategy.position_size == 0 and inRange and timeOk and not eodClose
+    strategy.entry("Long", strategy.long)
 
-// ラベル
-if use_am and is_am_open and not na(am_gap_pct)
-    string pat = am_gap_up ? "GapUp" : (am_gap_down ? "GapDown" : "Cont")
-    label.new(
-        bar_index, high,
-        "AM " + pat + "\n" + (am_bull ? "陽" : "陰") + " " + str.tostring(math.round(am_gap_pct * 100, 2)) + "%",
-        color=am_bull ? color.red : color.white,
-        textcolor=am_bull ? color.white : color.black,  // ← ここを追加・修正
-        style=label.style_label_up,
-        yloc=yloc.abovebar,
-        size=size.small
-    )
+// ナンピン1（初回から nappin1Ticks 下）
+if strategy.position_size > 0 and not nappin1Done and not na(entryPrice) and
+   low <= entryPrice - nappin1Ticks * tickSize and inRange and timeOk and not eodClose
+    strategy.entry("Nappin1", strategy.long)
+    nappin1Done := true
 
-if use_pm and is_pm_open and not na(pm_gap_pct)
-    string pat = pm_gap_up ? "GapUp" : (pm_gap_down ? "GapDown" : "Cont")
-    label.new(
-        bar_index, high,
-        "PM " + pat + "\n" + (pm_bull ? "陽" : "陰") + " " + str.tostring(math.round(pm_gap_pct * 100, 2)) + "%",
-        color=pm_bull ? color.red : color.white,
-        textcolor=pm_bull ? color.white : color.black,  // ← ここを追加・修正
-        style=label.style_label_up,
-        yloc=yloc.abovebar,
-        size=size.small
-    )
-// === ヘルパー関数 ===
-f_wr(bull, bear) =>
-    int tot = bull + bear
-    tot > 0 ? str.tostring(math.round(float(bull) / float(tot) * 100, 1)) + "%" : "—"
+// ナンピン2（初回から nappin1Ticks + nappin2Ticks 下）
+if strategy.position_size > 0 and nappin1Done and not nappin2Done and not na(entryPrice) and
+   low <= entryPrice - (nappin1Ticks + nappin2Ticks) * tickSize and inRange and timeOk and not eodClose
+    strategy.entry("Nappin2", strategy.long)
+    nappin2Done := true
 
-f_ev(pnl, bull, bear) =>
-    int tot = bull + bear
-    tot > 0 ? str.tostring(math.round(pnl / float(tot), 1)) : "—"
+// 事前アラート
+if preSignal and not signal and inRange and timeOk and not eodClose and alertPreSignal
+    alert("ズレ手法: " + syminfo.ticker + " 陰線N-1本確定。次の陰線でエントリー候補。", alert.freq_once_per_bar)
 
-f_row(tbl, row, lbl, bull, bear, pnl, bg) =>
-    table.cell(tbl, 0, row, lbl, bgcolor=bg, text_color=color.white, text_size=size.normal)
-    table.cell(tbl, 1, row, str.tostring(bull), bgcolor=bg, text_color=color.lime, text_size=size.normal)
-    table.cell(tbl, 2, row, str.tostring(bear), bgcolor=bg, text_color=color.red, text_size=size.normal)
-    table.cell(tbl, 3, row, f_wr(bull, bear), bgcolor=bg, text_color=color.white, text_size=size.normal)
-    table.cell(tbl, 4, row, f_ev(pnl, bull, bear), bgcolor=bg, text_color=color.white, text_size=size.normal)
+// 可視化
+plotshape(signal and inRange and timeOk and not eodClose, "シグナル", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(preSignal and not signal and inRange and timeOk and not eodClose, "事前シグナル", shape.triangleup, location.belowbar, color.orange, size=size.tiny)
+plot(strategy.position_size > 0 and not na(tpPrice) ? tpPrice : na, "TP Line", color.lime, style=plot.style_linebr)
+plot(strategy.position_size > 0 and not na(slPrice) ? slPrice : na, "SL Line", color.red,  style=plot.style_linebr)
 
-f_sec(tbl, row, lbl) =>
-    for c = 0 to 4
-        table.cell(tbl, c, row, c == 0 ? lbl : "",
-             bgcolor=color.new(#455a64, 0), text_color=color.white, text_size=size.normal)
+bgcolor(not inRange ? color.new(color.gray, 90) : na)
 
-// === メイン表（パターン + Stats 縦ドッキング）===
-var table mainTable = table.new(position.top_right, 5, 25,
-     bgcolor=color.new(color.gray, 90), border_width=1,
-     frame_color=color.gray, border_color=color.new(color.gray, 60))
+// === レポートテーブル ===
+showTable = input.bool(true, "レポートテーブル表示", group="レポート設定")
+
+var table reportTable = table.new(
+     position.top_right, columns = 2, rows = 15,
+     bgcolor = color.new(color.white, 80), border_width = 1,
+     frame_color = color.gray, border_color = color.gray)
 
 if showTable and (barstate.islastconfirmedhistory or barstate.islast)
-    // パターン表ヘッダー
-    color C_HDR = color.new(#1e88e5, 0)
-    table.cell(mainTable, 0, 0, "パターン", bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, 0, "陽",       bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 2, 0, "陰",       bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 3, 0, "勝率",     bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 4, 0, "EV(円)",   bgcolor=C_HDR, text_color=color.white, text_size=size.normal)
-
-    int row = 1
-
-    if use_am
-        color C_AM = color.new(#1b5e20, 30)
-        f_sec(mainTable, row, "午前 09:00")
-        row += 1
-        f_row(mainTable, row, "GapUp", am_gu_bull, am_gu_bear, am_gu_pnl, C_AM)
-        row += 1
-        f_row(mainTable, row, "GapDown", am_gd_bull, am_gd_bear, am_gd_pnl, C_AM)
-        row += 1
-        f_row(mainTable, row, "Cont", am_co_bull, am_co_bear, am_co_pnl, C_AM)
-        row += 1
-
-    if use_pm
-        color C_PM = color.new(#1a237e, 30)
-        f_sec(mainTable, row, "後場 12:30")
-        row += 1
-        f_row(mainTable, row, "GapUp", pm_gu_bull, pm_gu_bear, pm_gu_pnl, C_PM)
-        row += 1
-        f_row(mainTable, row, "GapDown", pm_gd_bull, pm_gd_bear, pm_gd_pnl, C_PM)
-        row += 1
-        f_row(mainTable, row, "Cont", pm_co_bull, pm_co_bear, pm_co_pnl, C_PM)
-        row += 1
-
-    // Statsセクション
-    color C_STATS = color.new(#4a148c, 30)
-    f_sec(mainTable, row, "Strategy Stats")
-    row += 1
-
     float max_dd_amount = strategy.max_drawdown
     float max_dd_pct    = strategy.initial_capital > 0 ? (strategy.max_drawdown / strategy.initial_capital) * 100 : na
+
+    table.cell(reportTable, 0, 0, "項目", text_color = color.white, bgcolor = color.new(#1e88e5, 0), text_size = size.normal)
+    table.cell(reportTable, 1, 0, "値",   text_color = color.white, bgcolor = color.new(#1e88e5, 0), text_size = size.normal)
+
+    int r = 1
+
+    table.cell(reportTable, 0, r, "Net Profit", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(strategy.netprofit, "#,###.##"),
+               text_color = strategy.netprofit >= 0 ? color.green : color.red)
+    r += 1
+
+    table.cell(reportTable, 0, r, "Gross Profit", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(strategy.grossprofit, "#,###.##"), text_color = color.white)
+    r += 1
+
+    table.cell(reportTable, 0, r, "Gross Loss", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(strategy.grossloss, "#,###.##"), text_color = color.white)
+    r += 1
+
     float pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+    table.cell(reportTable, 0, r, "Profit Factor", text_color = color.white)
+    table.cell(reportTable, 1, r, na(pf) ? "—" : str.tostring(pf, "#.##"),
+               text_color = pf >= 1.5 ? color.green : (pf >= 1.0 ? color.orange : color.red))
+    r += 1
+
     float win_rate = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : 0
+    table.cell(reportTable, 0, r, "Win Rate %", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(win_rate, "#.##") + "%",
+               text_color = win_rate >= 50 ? color.green : color.red)
+    r += 1
 
-    // Stats行
-    table.cell(mainTable, 0, row, "Net Profit", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(strategy.netprofit, "#,###.##"), bgcolor=C_STATS, text_color = strategy.netprofit >= 0 ? color.green : color.red, text_size=size.normal)
-    row += 1
+    table.cell(reportTable, 0, r, "Total Trades", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(strategy.closedtrades), text_color = color.white)
+    r += 1
 
-    table.cell(mainTable, 0, row, "Gross Profit", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(strategy.grossprofit, "#,###.##"), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
+    table.cell(reportTable, 0, r, "Win Trades", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(strategy.wintrades), text_color = color.white)
+    r += 1
 
-    table.cell(mainTable, 0, row, "Gross Loss", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(strategy.grossloss, "#,###.##"), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
+    table.cell(reportTable, 0, r, "Loss Trades", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(strategy.losstrades), text_color = color.white)
+    r += 1
 
-    table.cell(mainTable, 0, row, "Profit Factor", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, na(pf) ? "—" : str.tostring(pf, "#.##"), bgcolor=C_STATS, text_color = pf >= 1.5 ? color.green : (pf >= 1.0 ? color.orange : color.red), text_size=size.normal)
-    row += 1
+    table.cell(reportTable, 0, r, "Max Drawdown %", text_color = color.white)
+    table.cell(reportTable, 1, r, na(max_dd_pct) ? "—" : str.tostring(max_dd_pct, "#.##") + "%", text_color = color.white)
+    r += 1
 
-    table.cell(mainTable, 0, row, "Win Rate %", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(win_rate, "#.##") + "%", bgcolor=C_STATS, text_color = win_rate >= 50 ? color.green : color.red, text_size=size.normal)
-    row += 1
-
-    table.cell(mainTable, 0, row, "Total Trades", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(strategy.closedtrades), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
-
-    table.cell(mainTable, 0, row, "Win Trades", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(strategy.wintrades), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
-
-    table.cell(mainTable, 0, row, "Loss Trades", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(strategy.losstrades), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
-
-    table.cell(mainTable, 0, row, "Max Drawdown %", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, na(max_dd_pct) ? "—" : str.tostring(max_dd_pct, "#.##") + "%", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
-
-    table.cell(mainTable, 0, row, "Max Drawdown (金額)", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, str.tostring(max_dd_amount, "#,###.##"), bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    row += 1
+    table.cell(reportTable, 0, r, "Max Drawdown (金額)", text_color = color.white)
+    table.cell(reportTable, 1, r, str.tostring(max_dd_amount, "#,###.##"), text_color = color.white)
+    r += 1
 
     float dd_profit_ratio = strategy.netprofit != 0 ? (max_dd_amount / strategy.netprofit) * 100 : na
-    table.cell(mainTable, 0, row, "DD/Profit Ratio", bgcolor=C_STATS, text_color=color.white, text_size=size.normal)
-    table.cell(mainTable, 1, row, na(dd_profit_ratio) ? "—" : str.tostring(dd_profit_ratio, "#.##") + "%", 
-               bgcolor=C_STATS, 
-               text_color = na(dd_profit_ratio) ? color.white : strategy.netprofit <= 0 ? color.red : dd_profit_ratio > 50 ? color.red : dd_profit_ratio > 30 ? color.orange : color.green, 
-               text_size=size.normal)
+    table.cell(reportTable, 0, r, "DD/Profit Ratio", text_color = color.white)
+    table.cell(reportTable, 1, r, na(dd_profit_ratio) ? "—" : str.tostring(dd_profit_ratio, "#.##") + "%",
+               text_color = na(dd_profit_ratio) ? color.white :
+                            strategy.netprofit <= 0 ? color.red :
+                            dd_profit_ratio > 50 ? color.red :
+                            dd_profit_ratio > 30 ? color.orange : color.green)

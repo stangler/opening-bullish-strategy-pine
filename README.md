@@ -10,7 +10,7 @@
 - **前場 AM** エントリー: 09:00 始値 → 09:01/03/05 終値でクローズ
 - **後場 PM** エントリー: 前場最終足（11:29/11:27/11:25）始値 → 12:30 始値でクローズ
 - **ギャップ判定**:
-  - AM: 前日終値 vs 当日09:00始値
+  - AM: 前日終値 vs 当日寄り付き始値（遅延寄り付き対応済み）
   - PM: 前場終値 vs 12:30始値
 - **3パターン別集計**: GapUp／GapDown／Cont × 陽線・陰線本数・勝率・EV(円)
 - **Statsテーブル**: Net Profit・PF・Win Rate・Max DD・DD/Profit Ratio を同一テーブルに縦ドッキング表示
@@ -19,9 +19,10 @@
 ## エントリー/エグジット ロジック
 
 ### 前場 AM
-1. `timeframe.change("D")` → 09:00 寄り付き足で `strategy.entry("AM")`
+1. `am_fired_today` フラグで当日 `hour >= 9` の最初の足を捕捉 → `strategy.entry("AM")`
 2. 同足で `strategy.close("AM", immediately=true)`
-3. 前日 `close[1]`（日足）vs 当日 `open` → ギャップ率計算
+3. 前日 `close[1]`（日足）vs 当日寄り付き `open` → ギャップ率計算
+4. 買い気配等で09:00に寄り付かない場合も、実際に寄り付いた足を正しく捕捉
 
 ### 後場 PM
 1. 前場最終足（11:29/11:27/11:25）で `strategy.entry("PM")`
@@ -53,6 +54,6 @@
 
 ---
 
-**Version**: 4.0（AM/PM 両セッション + Statsテーブル統合）  
-**Branch**: `feature/morning-gap-entry-1m3m5m`  
+**Version**: 4.1（遅延寄り付き対応・ラベルサイズ large 変更）  
+**Branch**: `feature/am-delayed-open-detection`  
 **License**: MIT
