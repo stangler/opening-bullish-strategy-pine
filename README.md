@@ -12,7 +12,7 @@
 - **ギャップ判定**:
   - AM: 前日終値 vs 当日寄り付き始値（遅延寄り付き対応済み）
   - PM: 前場終値 vs 12:30始値
-- **3パターン別集計**: GapUp／GapDown／Cont × 陽線・陰線本数・勝率・EV(円)
+- **3パターン別集計**: GapUp／GapDown／Cont × 陽線・陰線本数・勝率・EV(円)、**Sum行で合計表示**
 - **Statsテーブル**: Net Profit・PF・Win Rate・Max DD・DD/Profit Ratio を同一テーブルに縦ドッキング表示
 - **期間指定**: デフォルト 2026/04/01〜2026/04/26
 
@@ -31,7 +31,7 @@
 
 ## 統計テーブル（右上表示）
 
-- **AM/PM 各セクション**: GapUp・GapDown・Cont × 陽/陰 本数・勝率・EV(円)
+- **AM/PM 各セクション**: GapUp・GapDown・Cont × 陽/陰 本数・勝率・EV(円)、**Sum行（3パターン合計）**
 - **Strategy Stats セクション**: Net Profit・Gross Profit/Loss・PF・Win Rate・Total/Win/Loss Trades・Max DD(金額/%)・DD/Profit Ratio
 
 ## 使い方
@@ -54,6 +54,6 @@
 
 ---
 
-**Version**: 4.1（遅延寄り付き対応・ラベルサイズ large 変更）  
-**Branch**: `feature/am-delayed-open-detection`  
+**Version**: 4.2（パターンテーブルにSum行追加）  
+**Branch**: `feature/add-sum-row-to-pattern-table`  
 **License**: MIT
