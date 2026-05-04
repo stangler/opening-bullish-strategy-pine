@@ -1,0 +1,11 @@
+[project]
+name = "tv-backtest-scraper-yoritsuki"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "playwright>=1.44.0",
+]
+
+[tool.uv]
+dev-dependencies = []
