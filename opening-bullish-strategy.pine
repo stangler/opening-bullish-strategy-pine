@@ -261,3 +261,49 @@ if showTable and (barstate.islastconfirmedhistory or barstate.islast)
                bgcolor=C_STATS,
                text_color = na(dd_profit_ratio) ? color.white : strategy.netprofit <= 0 ? color.red : dd_profit_ratio > 50 ? color.red : dd_profit_ratio > 30 ? color.orange : color.green,
                text_size=size.normal)
+
+// === データウィンドウ出力 ===
+f_dw_wr(bull, bear) => bull + bear > 0 ? float(bull) / float(bull + bear) * 100 : na
+f_dw_ev(pnl, bull, bear) => bull + bear > 0 ? pnl / float(bull + bear) : na
+
+// AM
+plot(am_gu_bull,                                          title="AM GapUp 陽",   display=display.data_window)
+plot(am_gu_bear,                                          title="AM GapUp 陰",   display=display.data_window)
+plot(f_dw_wr(am_gu_bull, am_gu_bear),                    title="AM GapUp 勝率%", display=display.data_window)
+plot(f_dw_ev(am_gu_pnl,  am_gu_bull, am_gu_bear),        title="AM GapUp EV",   display=display.data_window)
+
+plot(am_gd_bull,                                          title="AM GapDown 陽",   display=display.data_window)
+plot(am_gd_bear,                                          title="AM GapDown 陰",   display=display.data_window)
+plot(f_dw_wr(am_gd_bull, am_gd_bear),                    title="AM GapDown 勝率%", display=display.data_window)
+plot(f_dw_ev(am_gd_pnl,  am_gd_bull, am_gd_bear),        title="AM GapDown EV",   display=display.data_window)
+
+plot(am_co_bull,                                          title="AM Cont 陽",   display=display.data_window)
+plot(am_co_bear,                                          title="AM Cont 陰",   display=display.data_window)
+plot(f_dw_wr(am_co_bull, am_co_bear),                    title="AM Cont 勝率%", display=display.data_window)
+plot(f_dw_ev(am_co_pnl,  am_co_bull, am_co_bear),        title="AM Cont EV",   display=display.data_window)
+
+plot(am_gu_bull + am_gd_bull + am_co_bull,               title="AM Sum 陽",   display=display.data_window)
+plot(am_gu_bear + am_gd_bear + am_co_bear,               title="AM Sum 陰",   display=display.data_window)
+plot(f_dw_wr(am_gu_bull+am_gd_bull+am_co_bull, am_gu_bear+am_gd_bear+am_co_bear), title="AM Sum 勝率%", display=display.data_window)
+plot(f_dw_ev(am_gu_pnl+am_gd_pnl+am_co_pnl,  am_gu_bull+am_gd_bull+am_co_bull, am_gu_bear+am_gd_bear+am_co_bear), title="AM Sum EV", display=display.data_window)
+
+// PM
+plot(pm_gu_bull,                                          title="PM GapUp 陽",   display=display.data_window)
+plot(pm_gu_bear,                                          title="PM GapUp 陰",   display=display.data_window)
+plot(f_dw_wr(pm_gu_bull, pm_gu_bear),                    title="PM GapUp 勝率%", display=display.data_window)
+plot(f_dw_ev(pm_gu_pnl,  pm_gu_bull, pm_gu_bear),        title="PM GapUp EV",   display=display.data_window)
+
+plot(pm_gd_bull,                                          title="PM GapDown 陽",   display=display.data_window)
+plot(pm_gd_bear,                                          title="PM GapDown 陰",   display=display.data_window)
+plot(f_dw_wr(pm_gd_bull, pm_gd_bear),                    title="PM GapDown 勝率%", display=display.data_window)
+plot(f_dw_ev(pm_gd_pnl,  pm_gd_bull, pm_gd_bear),        title="PM GapDown EV",   display=display.data_window)
+
+plot(pm_co_bull,                                          title="PM Cont 陽",   display=display.data_window)
+plot(pm_co_bear,                                          title="PM Cont 陰",   display=display.data_window)
+plot(f_dw_wr(pm_co_bull, pm_co_bear),                    title="PM Cont 勝率%", display=display.data_window)
+plot(f_dw_ev(pm_co_pnl,  pm_co_bull, pm_co_bear),        title="PM Cont EV",   display=display.data_window)
+
+plot(pm_gu_bull + pm_gd_bull + pm_co_bull,               title="PM Sum 陽",   display=display.data_window)
+plot(pm_gu_bear + pm_gd_bear + pm_co_bear,               title="PM Sum 陰",   display=display.data_window)
+plot(f_dw_wr(pm_gu_bull+pm_gd_bull+pm_co_bull, pm_gu_bear+pm_gd_bear+pm_co_bear), title="PM Sum 勝率%", display=display.data_window)
+plot(f_dw_ev(pm_gu_pnl+pm_gd_pnl+pm_co_pnl,  pm_gu_bull+pm_gd_bull+pm_co_bull, pm_gu_bear+pm_gd_bear+pm_co_bear), title="PM Sum EV", display=display.data_window)
