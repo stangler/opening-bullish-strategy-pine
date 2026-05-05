@@ -2,132 +2,102 @@ import csv
 from pathlib import Path
 from openpyxl import load_workbook
 
-# CSVファイルから指標を抽出
+STRATEGY_KEYS = [
+    "総損益", "最大ドローダウン", "トレード総数",
+    "勝ちトレード", "負けトレード", "勝率", "プロフィットファクター",
+]
+
+DW_KEYS = [
+    "AM GapUp 陽", "AM GapUp 陰", "AM GapUp 勝率%", "AM GapUp EV",
+    "AM GapDown 陽", "AM GapDown 陰", "AM GapDown 勝率%", "AM GapDown EV",
+    "AM Cont 陽", "AM Cont 陰", "AM Cont 勝率%", "AM Cont EV",
+    "AM Sum 陽", "AM Sum 陰", "AM Sum 勝率%", "AM Sum EV",
+    "PM GapUp 陽", "PM GapUp 陰", "PM GapUp 勝率%", "PM GapUp EV",
+    "PM GapDown 陽", "PM GapDown 陰", "PM GapDown 勝率%", "PM GapDown EV",
+    "PM Cont 陽", "PM Cont 陰", "PM Cont 勝率%", "PM Cont EV",
+    "PM Sum 陽", "PM Sum 陰", "PM Sum 勝率%", "PM Sum EV",
+]
+
 def extract_from_csv(csv_file):
     data = {}
+    section = None  # "strategy" | "dw"
+
     with open(csv_file, encoding="utf-8-sig") as f:
         reader = csv.reader(f)
-        # 最初の行は銘柄
-        first_row = next(reader, None)
-        if first_row and len(first_row) >= 2:
-            data['銘柄'] = first_row[1].strip()
-        
-        # 2行目はヘッダー（指標,値）なのでスキップ
-        next(reader, None)
-        
-        # 指標と値を辞書に格納
-        seen_count = {}
         for row in reader:
-            if len(row) >= 2:
-                key = row[0].strip()
-                value = row[1].strip()
-                seen_count[key] = seen_count.get(key, 0) + 1
-                # 「勝ちトレード」は2番目の出現値を使用、それ以外は最初の出現のみ保持
-                if key == '勝ちトレード':
-                    if seen_count[key] == 2:
-                        data[key] = value
-                elif key not in data:
-                    data[key] = value
-    
+            if not row:
+                continue
+
+            # 銘柄行
+            if row[0].strip() == "銘柄" and len(row) >= 2:
+                data["銘柄"] = row[1].strip()
+                continue
+
+            # セクション切替
+            if row[0].strip() == "=== Strategy Tester ===":
+                section = "strategy"
+                continue
+            if row[0].strip() == "=== Data Window ===":
+                section = "dw"
+                continue
+
+            # ヘッダー行スキップ
+            if row[0].strip() == "指標":
+                continue
+
+            if len(row) < 2:
+                continue
+
+            key   = row[0].strip()
+            value = row[1].strip()
+
+            if section == "strategy" and key in STRATEGY_KEYS and key not in data:
+                data[key] = value
+            elif section == "dw" and key in DW_KEYS and key not in data:
+                data[key] = value
+
     return data
 
-# format.xlsxを更新
-def update_excel(csv_data_list):
-    wb = load_workbook("format.xlsx")
+def update_excel(csv_data_list, xlsx_path="format.xlsx"):
+    wb = load_workbook(xlsx_path)
     ws = wb.active
-    
-    # ヘッダー行を取得
-    headers = []
-    for cell in ws[1]:
-        headers.append(cell.value)
-    
-    print(f"Excel headers: {headers}")
-    
-    # 各行の銘柄を確認し、対応するCSVデータを書き込む
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-        symbol_cell = row[1]  # 銘柄は列B（インデックス1）
-        if symbol_cell.value:
-            symbol = str(symbol_cell.value).strip()
-            print(f"\nRow {row_idx}: Looking for symbol '{symbol}'")
-            
-            # 対応するCSVデータを探す
-            csv_data = None
-            for d in csv_data_list:
-                if d.get('銘柄') == symbol:
-                    csv_data = d
-                    break
-            
-            if csv_data:
-                print(f"  Found CSV data: {list(csv_data.keys())}")
-                # 列C: 総損益
-                if '総損益' in csv_data:
-                    row[2].value = csv_data['総損益']
-                    print(f"  Set 総損益: {csv_data['総損益']}")
-                else:
-                    print(f"  Warning: '総損益' not found in CSV data")
-                
-                # 列D: 最大ドローダウン
-                if '最大ドローダウン' in csv_data:
-                    row[3].value = csv_data['最大ドローダウン']
-                    print(f"  Set 最大ドローダウン: {csv_data['最大ドローダウン']}")
-                else:
-                    print(f"  Warning: '最大ドローダウン' not found in CSV data")
-                
-                # 列E: トレード総数
-                if 'トレード総数' in csv_data:
-                    row[4].value = csv_data['トレード総数']
-                    print(f"  Set トレード総数: {csv_data['トレード総数']}")
-                else:
-                    print(f"  Warning: 'トレード総数' not found in CSV data")
-                
-                # 列F: 勝ちトレード
-                if '勝ちトレード' in csv_data:
-                    row[5].value = csv_data['勝ちトレード']
-                    print(f"  Set 勝ちトレード: {csv_data['勝ちトレード']}")
-                else:
-                    print(f"  Warning: '勝ちトレード' not found in CSV data")
-                
-                # 列G: 負けトレード
-                if '負けトレード' in csv_data:
-                    row[6].value = csv_data['負けトレード']
-                    print(f"  Set 負けトレード: {csv_data['負けトレード']}")
-                else:
-                    print(f"  Warning: '負けトレード' not found in CSV data")
-                
-                # 列H: 勝率
-                if '勝率' in csv_data:
-                    row[7].value = csv_data['勝率']
-                    print(f"  Set 勝率: {csv_data['勝率']}")
-                else:
-                    print(f"  Warning: '勝率' not found in CSV data")
-                
-                # 列I: プロフィットファクター
-                if 'プロフィットファクター' in csv_data:
-                    row[8].value = csv_data['プロフィットファクター']
-                    print(f"  Set プロフィットファクター: {csv_data['プロフィットファクター']}")
-                else:
-                    print(f"  Warning: 'プロフィットファクター' not found in CSV data")
-            else:
-                print(f"  No CSV data found for symbol '{symbol}'")
-    
-    # 保存（元のファイルを上書き）
-    output_file = "format.xlsx"
-    wb.save(output_file)
-    print(f"\nSaved to {output_file}")
 
-# メイン処理
+    # ヘッダー → 列インデックス マッピング（0始まり）
+    headers = [cell.value for cell in ws[1]]
+    col_map = {h: i for i, h in enumerate(headers) if h}
+
+    all_keys = STRATEGY_KEYS + DW_KEYS
+
+    for row in ws.iter_rows(min_row=2):
+        symbol_cell = row[col_map["銘柄"]]
+        if not symbol_cell.value:
+            continue
+        symbol = str(symbol_cell.value).strip()
+
+        csv_data = next((d for d in csv_data_list if d.get("銘柄") == symbol), None)
+        if not csv_data:
+            print(f"  ✗ CSVなし: {symbol}")
+            continue
+
+        print(f"  ✓ {symbol}")
+        for key in all_keys:
+            if key in col_map and key in csv_data:
+                row[col_map[key]].value = csv_data[key]
+
+    wb.save(xlsx_path)
+    print(f"\n保存 → {xlsx_path}")
+
 def main():
-    # CSVファイルをすべて取得
     csv_files = list(Path(".").glob("*.csv"))
-    print(f"Found {len(csv_files)} CSV files")
-    
+    print(f"CSV {len(csv_files)} 件\n")
+
     csv_data_list = []
-    for csv_file in csv_files:
-        data = extract_from_csv(csv_file)
-        csv_data_list.append(data)
-        print(f"\n{csv_file.name}: {list(data.keys())}")
-    
-    # Excelを更新
+    for f in csv_files:
+        d = extract_from_csv(f)
+        csv_data_list.append(d)
+        print(f"{f.name}: 銘柄={d.get('銘柄')} / {len(d)-1}項目")
+
+    print()
     update_excel(csv_data_list)
 
 if __name__ == "__main__":
