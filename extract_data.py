@@ -3,8 +3,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 STRATEGY_KEYS = [
-    "総損益", "最大ドローダウン", "トレード総数",
-    "勝ちトレード", "負けトレード", "勝率", "プロフィットファクター",
+    "総損益", "最大ドローダウン",
+    "勝率", "プロフィットファクター",
 ]
 
 DW_KEYS = [
@@ -56,6 +56,21 @@ def extract_from_csv(csv_file):
             elif section == "dw" and key in DW_KEYS and key not in data:
                 data[key] = value
 
+    # トレード総数・勝ちトレード・負けトレードをDW値から計算
+    def _int(key):
+        v = data.get(key, "")
+        try:
+            # float経由でint化（"18.0"等の小数文字列に対応）
+            return int(float(str(v).replace(",", "").replace("∅", "0")))
+        except ValueError:
+            return 0
+
+    win  = _int("AM Sum 陽") + _int("PM Sum 陽")
+    lose = _int("AM Sum 陰") + _int("PM Sum 陰")
+    data["勝ちトレード"] = str(win)
+    data["負けトレード"] = str(lose)
+    data["トレード総数"] = str(win + lose)
+
     return data
 
 def update_excel(csv_data_list, xlsx_path="format.xlsx"):
@@ -66,7 +81,7 @@ def update_excel(csv_data_list, xlsx_path="format.xlsx"):
     headers = [cell.value for cell in ws[1]]
     col_map = {h: i for i, h in enumerate(headers) if h}
 
-    all_keys = STRATEGY_KEYS + DW_KEYS
+    all_keys = STRATEGY_KEYS + ["トレード総数", "勝ちトレード", "負けトレード"] + DW_KEYS
 
     for row in ws.iter_rows(min_row=2):
         symbol_cell = row[col_map["銘柄"]]

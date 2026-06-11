@@ -5,10 +5,11 @@ strategy("寄付強気戦略",
 // 入力
 use_am            = input.bool(true,  "前場 09:00 有効", group="セッション設定")
 use_pm            = input.bool(true,  "後場 12:30 有効", group="セッション設定")
-start_date        = input.time(timestamp("2026-04-01 00:00"), "開始日")
-end_date          = input.time(timestamp("2026-04-26 23:59"), "終了日")
+start_date        = input.time(timestamp("2026-04-20 00:00"), "開始日")
+end_date          = input.time(timestamp("2026-06-30 23:59"), "終了日")
 gap_threshold_pct = input.float(0.1, "ギャップ閾値（%）")
 showTable         = input.bool(true,  "レポートテーブル表示", group="レポート設定")
+max_trades        = input.int(30, "集計上限トレード数", minval=1, group="レポート設定")
 
 // 基本
 in_range       = time >= start_date and time <= end_date
@@ -77,57 +78,75 @@ if use_pm and is_last_am
 if use_pm and is_pm_open
     strategy.close("PM", immediately=true)
 
-// カウンタ (AM)
-var int   am_gu_bull = 0
-var int   am_gu_bear = 0
-var int   am_gd_bull = 0
-var int   am_gd_bear = 0
-var int   am_co_bull = 0
-var int   am_co_bear = 0
-var float am_gu_pnl  = 0.0
-var float am_gd_pnl  = 0.0
-var float am_co_pnl  = 0.0
+// === 配列蓄積 (AM) ===
+var array<int>   am_arr_pat  = array.new<int>()
+var array<int>   am_arr_bull = array.new<int>()
+var array<float> am_arr_pnl  = array.new<float>()
 
 if use_am and is_am_open
-    float pnl = close - open
-    if am_gap_up
-        am_gu_pnl += pnl
-        am_gu_bull += am_bull ? 1 : 0
-        am_gu_bear += am_bull ? 0 : 1
-    else if am_gap_down
-        am_gd_pnl += pnl
-        am_gd_bull += am_bull ? 1 : 0
-        am_gd_bear += am_bull ? 0 : 1
-    else if am_cont
-        am_co_pnl += pnl
-        am_co_bull += am_bull ? 1 : 0
-        am_co_bear += am_bull ? 0 : 1
+    array.push(am_arr_pat,  am_gap_up ? 0 : (am_gap_down ? 1 : 2))
+    array.push(am_arr_bull, am_bull ? 1 : 0)
+    array.push(am_arr_pnl,  close - open)
 
-// カウンタ (PM)
-var int   pm_gu_bull = 0
-var int   pm_gu_bear = 0
-var int   pm_gd_bull = 0
-var int   pm_gd_bear = 0
-var int   pm_co_bull = 0
-var int   pm_co_bear = 0
-var float pm_gu_pnl  = 0.0
-var float pm_gd_pnl  = 0.0
-var float pm_co_pnl  = 0.0
+// === 配列蓄積 (PM) ===
+var array<int>   pm_arr_pat  = array.new<int>()
+var array<int>   pm_arr_bull = array.new<int>()
+var array<float> pm_arr_pnl  = array.new<float>()
 
 if use_pm and is_pm_open
-    float pnl = close - open
-    if pm_gap_up
-        pm_gu_pnl += pnl
-        pm_gu_bull += pm_bull ? 1 : 0
-        pm_gu_bear += pm_bull ? 0 : 1
-    else if pm_gap_down
-        pm_gd_pnl += pnl
-        pm_gd_bull += pm_bull ? 1 : 0
-        pm_gd_bear += pm_bull ? 0 : 1
-    else if pm_cont
-        pm_co_pnl += pnl
-        pm_co_bull += pm_bull ? 1 : 0
-        pm_co_bear += pm_bull ? 0 : 1
+    array.push(pm_arr_pat,  pm_gap_up ? 0 : (pm_gap_down ? 1 : 2))
+    array.push(pm_arr_bull, pm_bull ? 1 : 0)
+    array.push(pm_arr_pnl,  close - open)
+
+// === 直近N件集計関数 ===
+f_calc(pat_arr, bull_arr, pnl_arr, n) =>
+    int   sz      = array.size(pat_arr)
+    int   gu_bull = 0,  gu_bear = 0
+    int   gd_bull = 0,  gd_bear = 0
+    int   co_bull = 0,  co_bear = 0
+    float gu_pnl  = 0.0
+    float gd_pnl  = 0.0
+    float co_pnl  = 0.0
+    if sz > 0
+        int start_i = math.max(0, sz - n)
+        for i = start_i to sz - 1
+            int   p = array.get(pat_arr,  i)
+            int   b = array.get(bull_arr, i)
+            float v = array.get(pnl_arr,  i)
+            if p == 0
+                gu_pnl  += v
+                gu_bull += b == 1 ? 1 : 0
+                gu_bear += b == 0 ? 1 : 0
+            else if p == 1
+                gd_pnl  += v
+                gd_bull += b == 1 ? 1 : 0
+                gd_bear += b == 0 ? 1 : 0
+            else
+                co_pnl  += v
+                co_bull += b == 1 ? 1 : 0
+                co_bear += b == 0 ? 1 : 0
+    [gu_bull, gu_bear, gu_pnl, gd_bull, gd_bear, gd_pnl, co_bull, co_bear, co_pnl]
+
+// === 集計結果変数（最終バーで更新）===
+var int   dw_am_gu_bull = 0,  dw_am_gu_bear = 0
+var int   dw_am_gd_bull = 0,  dw_am_gd_bear = 0
+var int   dw_am_co_bull = 0,  dw_am_co_bear = 0
+var float dw_am_gu_pnl  = 0.0, dw_am_gd_pnl = 0.0, dw_am_co_pnl = 0.0
+var int   dw_pm_gu_bull = 0,  dw_pm_gu_bear = 0
+var int   dw_pm_gd_bull = 0,  dw_pm_gd_bear = 0
+var int   dw_pm_co_bull = 0,  dw_pm_co_bear = 0
+var float dw_pm_gu_pnl  = 0.0, dw_pm_gd_pnl = 0.0, dw_pm_co_pnl = 0.0
+
+[ag_b, ag_r, ag_p, ad_b, ad_r, ad_p, ac_b, ac_r, ac_p] = f_calc(am_arr_pat, am_arr_bull, am_arr_pnl, max_trades)
+[pg_b, pg_r, pg_p, pd_b, pd_r, pd_p, pc_b, pc_r, pc_p] = f_calc(pm_arr_pat, pm_arr_bull, pm_arr_pnl, max_trades)
+
+if barstate.islastconfirmedhistory or barstate.islast
+    dw_am_gu_bull := ag_b,  dw_am_gu_bear := ag_r,  dw_am_gu_pnl := ag_p
+    dw_am_gd_bull := ad_b,  dw_am_gd_bear := ad_r,  dw_am_gd_pnl := ad_p
+    dw_am_co_bull := ac_b,  dw_am_co_bear := ac_r,  dw_am_co_pnl := ac_p
+    dw_pm_gu_bull := pg_b,  dw_pm_gu_bear := pg_r,  dw_pm_gu_pnl := pg_p
+    dw_pm_gd_bull := pd_b,  dw_pm_gd_bear := pd_r,  dw_pm_gd_pnl := pd_p
+    dw_pm_co_bull := pc_b,  dw_pm_co_bear := pc_r,  dw_pm_co_pnl := pc_p
 
 // ラベル
 if use_am and is_am_open and not na(am_gap_pct)
@@ -175,7 +194,7 @@ f_sec(tbl, row, lbl) =>
         table.cell(tbl, c, row, c == 0 ? lbl : "",
              bgcolor=color.new(#455a64, 0), text_color=color.white, text_size=size.normal)
 
-// === メイン表（パターン + Stats 縦ドッキング）===
+// === メイン表 ===
 var table mainTable = table.new(position.top_right, 5, 27,
      bgcolor=color.new(color.gray, 90), border_width=1,
      frame_color=color.gray, border_color=color.new(color.gray, 60))
@@ -194,26 +213,26 @@ if showTable and (barstate.islastconfirmedhistory or barstate.islast)
         color C_AM = color.new(#1b5e20, 30)
         f_sec(mainTable, row, "午前 09:00")
         row += 1
-        f_row(mainTable, row, "GapUp",   am_gu_bull, am_gu_bear, am_gu_pnl, C_AM)
+        f_row(mainTable, row, "GapUp",   dw_am_gu_bull, dw_am_gu_bear, dw_am_gu_pnl, C_AM)
         row += 1
-        f_row(mainTable, row, "GapDown", am_gd_bull, am_gd_bear, am_gd_pnl, C_AM)
+        f_row(mainTable, row, "GapDown", dw_am_gd_bull, dw_am_gd_bear, dw_am_gd_pnl, C_AM)
         row += 1
-        f_row(mainTable, row, "Cont",    am_co_bull, am_co_bear, am_co_pnl, C_AM)
+        f_row(mainTable, row, "Cont",    dw_am_co_bull, dw_am_co_bear, dw_am_co_pnl, C_AM)
         row += 1
-        f_row(mainTable, row, "Sum", am_gu_bull + am_gd_bull + am_co_bull, am_gu_bear + am_gd_bear + am_co_bear, am_gu_pnl + am_gd_pnl + am_co_pnl, C_AM)
+        f_row(mainTable, row, "Sum", dw_am_gu_bull+dw_am_gd_bull+dw_am_co_bull, dw_am_gu_bear+dw_am_gd_bear+dw_am_co_bear, dw_am_gu_pnl+dw_am_gd_pnl+dw_am_co_pnl, C_AM)
         row += 1
 
     if use_pm
         color C_PM = color.new(#1a237e, 30)
         f_sec(mainTable, row, "後場 12:30")
         row += 1
-        f_row(mainTable, row, "GapUp",   pm_gu_bull, pm_gu_bear, pm_gu_pnl, C_PM)
+        f_row(mainTable, row, "GapUp",   dw_pm_gu_bull, dw_pm_gu_bear, dw_pm_gu_pnl, C_PM)
         row += 1
-        f_row(mainTable, row, "GapDown", pm_gd_bull, pm_gd_bear, pm_gd_pnl, C_PM)
+        f_row(mainTable, row, "GapDown", dw_pm_gd_bull, dw_pm_gd_bear, dw_pm_gd_pnl, C_PM)
         row += 1
-        f_row(mainTable, row, "Cont",    pm_co_bull, pm_co_bear, pm_co_pnl, C_PM)
+        f_row(mainTable, row, "Cont",    dw_pm_co_bull, dw_pm_co_bear, dw_pm_co_pnl, C_PM)
         row += 1
-        f_row(mainTable, row, "Sum", pm_gu_bull + pm_gd_bull + pm_co_bull, pm_gu_bear + pm_gd_bear + pm_co_bear, pm_gu_pnl + pm_gd_pnl + pm_co_pnl, C_PM)
+        f_row(mainTable, row, "Sum", dw_pm_gu_bull+dw_pm_gd_bull+dw_pm_co_bull, dw_pm_gu_bear+dw_pm_gd_bear+dw_pm_co_bear, dw_pm_gu_pnl+dw_pm_gd_pnl+dw_pm_co_pnl, C_PM)
         row += 1
 
     color C_STATS = color.new(#4a148c, 30)
@@ -267,43 +286,43 @@ f_dw_wr(bull, bear) => bull + bear > 0 ? float(bull) / float(bull + bear) * 100 
 f_dw_ev(pnl, bull, bear) => bull + bear > 0 ? pnl / float(bull + bear) : na
 
 // AM
-plot(am_gu_bull,                                          title="AM GapUp 陽",   display=display.data_window)
-plot(am_gu_bear,                                          title="AM GapUp 陰",   display=display.data_window)
-plot(f_dw_wr(am_gu_bull, am_gu_bear),                    title="AM GapUp 勝率%", display=display.data_window)
-plot(f_dw_ev(am_gu_pnl,  am_gu_bull, am_gu_bear),        title="AM GapUp EV",   display=display.data_window)
+plot(dw_am_gu_bull,                                                    title="AM GapUp 陽",   display=display.data_window)
+plot(dw_am_gu_bear,                                                    title="AM GapUp 陰",   display=display.data_window)
+plot(f_dw_wr(dw_am_gu_bull, dw_am_gu_bear),                           title="AM GapUp 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_am_gu_pnl,  dw_am_gu_bull, dw_am_gu_bear),           title="AM GapUp EV",   display=display.data_window)
 
-plot(am_gd_bull,                                          title="AM GapDown 陽",   display=display.data_window)
-plot(am_gd_bear,                                          title="AM GapDown 陰",   display=display.data_window)
-plot(f_dw_wr(am_gd_bull, am_gd_bear),                    title="AM GapDown 勝率%", display=display.data_window)
-plot(f_dw_ev(am_gd_pnl,  am_gd_bull, am_gd_bear),        title="AM GapDown EV",   display=display.data_window)
+plot(dw_am_gd_bull,                                                    title="AM GapDown 陽",   display=display.data_window)
+plot(dw_am_gd_bear,                                                    title="AM GapDown 陰",   display=display.data_window)
+plot(f_dw_wr(dw_am_gd_bull, dw_am_gd_bear),                           title="AM GapDown 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_am_gd_pnl,  dw_am_gd_bull, dw_am_gd_bear),           title="AM GapDown EV",   display=display.data_window)
 
-plot(am_co_bull,                                          title="AM Cont 陽",   display=display.data_window)
-plot(am_co_bear,                                          title="AM Cont 陰",   display=display.data_window)
-plot(f_dw_wr(am_co_bull, am_co_bear),                    title="AM Cont 勝率%", display=display.data_window)
-plot(f_dw_ev(am_co_pnl,  am_co_bull, am_co_bear),        title="AM Cont EV",   display=display.data_window)
+plot(dw_am_co_bull,                                                    title="AM Cont 陽",   display=display.data_window)
+plot(dw_am_co_bear,                                                    title="AM Cont 陰",   display=display.data_window)
+plot(f_dw_wr(dw_am_co_bull, dw_am_co_bear),                           title="AM Cont 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_am_co_pnl,  dw_am_co_bull, dw_am_co_bear),           title="AM Cont EV",   display=display.data_window)
 
-plot(am_gu_bull + am_gd_bull + am_co_bull,               title="AM Sum 陽",   display=display.data_window)
-plot(am_gu_bear + am_gd_bear + am_co_bear,               title="AM Sum 陰",   display=display.data_window)
-plot(f_dw_wr(am_gu_bull+am_gd_bull+am_co_bull, am_gu_bear+am_gd_bear+am_co_bear), title="AM Sum 勝率%", display=display.data_window)
-plot(f_dw_ev(am_gu_pnl+am_gd_pnl+am_co_pnl,  am_gu_bull+am_gd_bull+am_co_bull, am_gu_bear+am_gd_bear+am_co_bear), title="AM Sum EV", display=display.data_window)
+plot(dw_am_gu_bull + dw_am_gd_bull + dw_am_co_bull,                   title="AM Sum 陽",   display=display.data_window)
+plot(dw_am_gu_bear + dw_am_gd_bear + dw_am_co_bear,                   title="AM Sum 陰",   display=display.data_window)
+plot(f_dw_wr(dw_am_gu_bull+dw_am_gd_bull+dw_am_co_bull, dw_am_gu_bear+dw_am_gd_bear+dw_am_co_bear), title="AM Sum 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_am_gu_pnl+dw_am_gd_pnl+dw_am_co_pnl,  dw_am_gu_bull+dw_am_gd_bull+dw_am_co_bull, dw_am_gu_bear+dw_am_gd_bear+dw_am_co_bear), title="AM Sum EV", display=display.data_window)
 
 // PM
-plot(pm_gu_bull,                                          title="PM GapUp 陽",   display=display.data_window)
-plot(pm_gu_bear,                                          title="PM GapUp 陰",   display=display.data_window)
-plot(f_dw_wr(pm_gu_bull, pm_gu_bear),                    title="PM GapUp 勝率%", display=display.data_window)
-plot(f_dw_ev(pm_gu_pnl,  pm_gu_bull, pm_gu_bear),        title="PM GapUp EV",   display=display.data_window)
+plot(dw_pm_gu_bull,                                                    title="PM GapUp 陽",   display=display.data_window)
+plot(dw_pm_gu_bear,                                                    title="PM GapUp 陰",   display=display.data_window)
+plot(f_dw_wr(dw_pm_gu_bull, dw_pm_gu_bear),                           title="PM GapUp 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_pm_gu_pnl,  dw_pm_gu_bull, dw_pm_gu_bear),           title="PM GapUp EV",   display=display.data_window)
 
-plot(pm_gd_bull,                                          title="PM GapDown 陽",   display=display.data_window)
-plot(pm_gd_bear,                                          title="PM GapDown 陰",   display=display.data_window)
-plot(f_dw_wr(pm_gd_bull, pm_gd_bear),                    title="PM GapDown 勝率%", display=display.data_window)
-plot(f_dw_ev(pm_gd_pnl,  pm_gd_bull, pm_gd_bear),        title="PM GapDown EV",   display=display.data_window)
+plot(dw_pm_gd_bull,                                                    title="PM GapDown 陽",   display=display.data_window)
+plot(dw_pm_gd_bear,                                                    title="PM GapDown 陰",   display=display.data_window)
+plot(f_dw_wr(dw_pm_gd_bull, dw_pm_gd_bear),                           title="PM GapDown 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_pm_gd_pnl,  dw_pm_gd_bull, dw_pm_gd_bear),           title="PM GapDown EV",   display=display.data_window)
 
-plot(pm_co_bull,                                          title="PM Cont 陽",   display=display.data_window)
-plot(pm_co_bear,                                          title="PM Cont 陰",   display=display.data_window)
-plot(f_dw_wr(pm_co_bull, pm_co_bear),                    title="PM Cont 勝率%", display=display.data_window)
-plot(f_dw_ev(pm_co_pnl,  pm_co_bull, pm_co_bear),        title="PM Cont EV",   display=display.data_window)
+plot(dw_pm_co_bull,                                                    title="PM Cont 陽",   display=display.data_window)
+plot(dw_pm_co_bear,                                                    title="PM Cont 陰",   display=display.data_window)
+plot(f_dw_wr(dw_pm_co_bull, dw_pm_co_bear),                           title="PM Cont 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_pm_co_pnl,  dw_pm_co_bull, dw_pm_co_bear),           title="PM Cont EV",   display=display.data_window)
 
-plot(pm_gu_bull + pm_gd_bull + pm_co_bull,               title="PM Sum 陽",   display=display.data_window)
-plot(pm_gu_bear + pm_gd_bear + pm_co_bear,               title="PM Sum 陰",   display=display.data_window)
-plot(f_dw_wr(pm_gu_bull+pm_gd_bull+pm_co_bull, pm_gu_bear+pm_gd_bear+pm_co_bear), title="PM Sum 勝率%", display=display.data_window)
-plot(f_dw_ev(pm_gu_pnl+pm_gd_pnl+pm_co_pnl,  pm_gu_bull+pm_gd_bull+pm_co_bull, pm_gu_bear+pm_gd_bear+pm_co_bear), title="PM Sum EV", display=display.data_window)
+plot(dw_pm_gu_bull + dw_pm_gd_bull + dw_pm_co_bull,                   title="PM Sum 陽",   display=display.data_window)
+plot(dw_pm_gu_bear + dw_pm_gd_bear + dw_pm_co_bear,                   title="PM Sum 陰",   display=display.data_window)
+plot(f_dw_wr(dw_pm_gu_bull+dw_pm_gd_bull+dw_pm_co_bull, dw_pm_gu_bear+dw_pm_gd_bear+dw_pm_co_bear), title="PM Sum 勝率%", display=display.data_window)
+plot(f_dw_ev(dw_pm_gu_pnl+dw_pm_gd_pnl+dw_pm_co_pnl,  dw_pm_gu_bull+dw_pm_gd_bull+dw_pm_co_bull, dw_pm_gu_bear+dw_pm_gd_bear+dw_pm_co_bear), title="PM Sum EV", display=display.data_window)
