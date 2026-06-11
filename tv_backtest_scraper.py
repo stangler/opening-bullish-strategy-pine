@@ -71,10 +71,13 @@ async def scrape_strategy(page) -> list:
         }
         const result = [];
         const seen = new Set();
+        // 値として有効か：数値・%・通貨記号・小数点・カンマ・符号・∅を含む
+        const isNumericVal = v => /^[+\-−]?[\d,\.]+(%|円)?$/.test(v) || v === '∅' || /^[+\-−]?[\d,\.]+$/.test(v.replace(/[,]/g,''));
         for (let i = 0; i < texts.length - 1; i++) {
             const key = texts[i];
             if (!keywords.some(k => key.includes(k))) continue;
             const val = texts[i + 1];
+            if (!isNumericVal(val)) continue;  // 数値でなければスキップ
             if (key.includes("勝ちトレード") && !seen.has("勝ちトレード_first")) {
                 seen.add("勝ちトレード_first");
                 continue;
