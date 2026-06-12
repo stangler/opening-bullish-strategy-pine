@@ -56,9 +56,8 @@ async def wait_for_chart_update(page, symbol: str):
 
 async def scrape_strategy(page) -> list:
     keywords = [
-        "純利益", "総損益", "最大ドローダウン",
-        "トレード総数", "勝ちトレード", "負けトレード",
-        "勝率", "プロフィットファクター", "期待値"
+        "総損益", "最大ドローダウン",
+        "プロフィットファクター"
     ]
     return await page.evaluate("""
     (keywords) => {
@@ -78,10 +77,6 @@ async def scrape_strategy(page) -> list:
             if (!keywords.some(k => key.includes(k))) continue;
             const val = texts[i + 1];
             if (!isNumericVal(val)) continue;  // 数値でなければスキップ
-            if (key.includes("勝ちトレード") && !seen.has("勝ちトレード_first")) {
-                seen.add("勝ちトレード_first");
-                continue;
-            }
             if (!seen.has(key)) {
                 seen.add(key);
                 result.push([key, val]);
