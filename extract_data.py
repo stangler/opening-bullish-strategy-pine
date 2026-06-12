@@ -4,18 +4,14 @@ from openpyxl import load_workbook
 
 STRATEGY_KEYS = [
     "総損益", "最大ドローダウン",
-    "勝率", "プロフィットファクター",
+    "プロフィットファクター",
 ]
 
 DW_KEYS = [
-    "AM GapUp 陽", "AM GapUp 陰", "AM GapUp 勝率%", "AM GapUp EV",
-    "AM GapDown 陽", "AM GapDown 陰", "AM GapDown 勝率%", "AM GapDown EV",
-    "AM Cont 陽", "AM Cont 陰", "AM Cont 勝率%", "AM Cont EV",
-    "AM Sum 陽", "AM Sum 陰", "AM Sum 勝率%", "AM Sum EV",
-    "PM GapUp 陽", "PM GapUp 陰", "PM GapUp 勝率%", "PM GapUp EV",
-    "PM GapDown 陽", "PM GapDown 陰", "PM GapDown 勝率%", "PM GapDown EV",
-    "PM Cont 陽", "PM Cont 陰", "PM Cont 勝率%", "PM Cont EV",
-    "PM Sum 陽", "PM Sum 陰", "PM Sum 勝率%", "PM Sum EV",
+    "GapUp 陽", "GapUp 陰", "GapUp 勝率%",
+    "GapDown 陽", "GapDown 陰", "GapDown 勝率%",
+    "Cont 陽", "Cont 陰", "Cont 勝率%",
+    "Sum 陽", "Sum 陰", "Sum 勝率%",
 ]
 
 def extract_from_csv(csv_file):
@@ -65,11 +61,12 @@ def extract_from_csv(csv_file):
         except ValueError:
             return 0
 
-    win  = _int("AM Sum 陽") + _int("PM Sum 陽")
-    lose = _int("AM Sum 陰") + _int("PM Sum 陰")
+    win  = _int("Sum 陽")
+    lose = _int("Sum 陰")
     data["勝ちトレード"] = str(win)
     data["負けトレード"] = str(lose)
     data["トレード総数"] = str(win + lose)
+    data["勝率"] = data.get("Sum 勝率%", "")
 
     return data
 
@@ -81,7 +78,7 @@ def update_excel(csv_data_list, xlsx_path="format.xlsx"):
     headers = [cell.value for cell in ws[1]]
     col_map = {h: i for i, h in enumerate(headers) if h}
 
-    all_keys = STRATEGY_KEYS + ["トレード総数", "勝ちトレード", "負けトレード"] + DW_KEYS
+    all_keys = STRATEGY_KEYS + ["トレード総数", "勝ちトレード", "負けトレード", "勝率"] + DW_KEYS
 
     for row in ws.iter_rows(min_row=2):
         symbol_cell = row[col_map["銘柄"]]
