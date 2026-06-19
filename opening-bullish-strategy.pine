@@ -3,9 +3,9 @@ strategy("寄付強気戦略",
      overlay=true, process_orders_on_close=true)
 
 // 入力
-gap_threshold_pct = input.float(0.1, "ギャップ閾値（%）")
+gap_threshold_pct = input.float(0.5, "ギャップ閾値（%）")
 showTable         = input.bool(true,  "レポートテーブル表示", group="レポート設定")
-max_trades        = input.int(30, "集計上限トレード数", minval=1, group="レポート設定")
+max_trades        = input.int(200, "集計上限トレード数", minval=1, group="レポート設定")
 
 // 基本
 is_5min        = timeframe.period == "5"
