@@ -7,8 +7,8 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 # ========== 設定 ==========
-URLS_FILE   = Path("urls.txt")
-OUTPUT_DIR  = Path(".")
+FORMAT_FILE = Path("format.csv")
+OUTPUT_DIR  = Path("csv")
 CHART_URL   = "https://jp.tradingview.com/chart/"
 USER_DATA   = r"C:\Temp\tv-profile-pw"   # セッション保存先
 WAIT_RECALC = 6      # バックテスト再計算待機（秒）
@@ -17,10 +17,13 @@ EXCHANGE    = "TSE"
 # ==========================
 
 def load_symbols() -> list[str]:
-    lines = URLS_FILE.read_text(encoding="utf-8").splitlines()
-    return [l.strip() for l in lines if l.strip() and not l.startswith("#")]
+    with open(FORMAT_FILE, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        symbols = [row["銘柄コード"].strip() for row in reader if row.get("銘柄コード", "").strip()]
+    return symbols
 
 def save_csv(strategy_data: list, dw_data: list, symbol: str):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r'[\\/:*?"<>|]', "_", symbol)
     fn = OUTPUT_DIR / f"{safe}_{datetime.now():%Y%m%d}.csv"
     with open(fn, "w", newline="", encoding="utf-8-sig") as f:

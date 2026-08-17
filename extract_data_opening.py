@@ -1,6 +1,5 @@
 import csv
 from pathlib import Path
-from openpyxl import load_workbook
 
 STRATEGY_KEYS = [
     "総損益", "最大ドローダウン",
@@ -70,21 +69,18 @@ def extract_from_csv(csv_file):
 
     return data
 
-def update_excel(csv_data_list, xlsx_path="format.xlsx"):
-    wb = load_workbook(xlsx_path)
-    ws = wb.active
-
-    # ヘッダー → 列インデックス マッピング（0始まり）
-    headers = [cell.value for cell in ws[1]]
-    col_map = {h: i for i, h in enumerate(headers) if h}
+def update_format_csv(csv_data_list, format_path="format.csv"):
+    with open(format_path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
 
     all_keys = STRATEGY_KEYS + ["トレード総数", "勝ちトレード", "負けトレード", "勝率"] + DW_KEYS
 
-    for row in ws.iter_rows(min_row=2):
-        symbol_cell = row[col_map["銘柄"]]
-        if not symbol_cell.value:
+    for row in rows:
+        symbol = (row.get("銘柄コード") or "").strip()
+        if not symbol:
             continue
-        symbol = str(symbol_cell.value).strip()
 
         csv_data = next((d for d in csv_data_list if d.get("銘柄") == symbol), None)
         if not csv_data:
@@ -93,14 +89,18 @@ def update_excel(csv_data_list, xlsx_path="format.xlsx"):
 
         print(f"  ✓ {symbol}")
         for key in all_keys:
-            if key in col_map and key in csv_data:
-                row[col_map[key]].value = csv_data[key]
+            if key in fieldnames and key in csv_data:
+                row[key] = csv_data[key]
 
-    wb.save(xlsx_path)
-    print(f"\n保存 → {xlsx_path}")
+    with open(format_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"\n保存 → {format_path}")
 
 def main():
-    csv_files = list(Path(".").glob("*.csv"))
+    csv_files = list(Path("csv").glob("*.csv"))
     print(f"CSV {len(csv_files)} 件\n")
 
     csv_data_list = []
@@ -110,7 +110,7 @@ def main():
         print(f"{f.name}: 銘柄={d.get('銘柄')} / {len(d)-1}項目")
 
     print()
-    update_excel(csv_data_list)
+    update_format_csv(csv_data_list)
 
 if __name__ == "__main__":
     main()
