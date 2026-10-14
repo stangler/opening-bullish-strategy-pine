@@ -14,6 +14,14 @@ USER_DATA   = r"C:\Temp\tv-profile-pw"   # セッション保存先
 WAIT_RECALC = 6      # バックテスト再計算待機（秒）
 WAIT_SEARCH = 1.5    # 検索ダイアログ安定待機（秒）
 EXCHANGE    = "TSE"
+
+# --- Data Window 安定化取得の設定 ---
+DW_INITIAL_WAIT_MS = 1500   # Endキー押下後の初回待機（旧: 800ms固定 → 不足していた）
+DW_POLL_INTERVAL_MS = 700   # ポーリング間隔
+DW_MAX_ATTEMPTS = 10        # 最大ポーリング回数
+DW_STABLE_CHECKS = 2        # 何回連続で同一値が取れたら「安定」とみなすか
+
+SYMBOL_MAX_RETRIES = 2      # 整合性チェックに失敗した銘柄の再取得回数
 # ==========================
 
 def load_symbols() -> list[str]:
@@ -89,13 +97,27 @@ async def scrape_strategy(page) -> list:
     }
     """, keywords)
 
-async def scrape_data_window(page) -> list:
-    # Endキーで最終バーへ移動 → Data Window更新
-    await page.keyboard.press("End")
-    await page.wait_for_timeout(800)
+DW_ANCHOR_KEYS = [
+    "GapUp 陽", "GapUp 陰", "GapUp 勝率%",
+    "GapDown 陽", "GapDown 陰", "GapDown 勝率%",
+    "Cont 陽", "Cont 陰", "Cont 勝率%",
+    "Sum 陽", "Sum 陰", "Sum 勝率%",
+]
 
-    result = await page.evaluate("""
-    () => {
+async def _read_data_window_raw(page, anchor_keys=DW_ANCHOR_KEYS) -> dict:
+    """
+    Data Windowの現在のDOM状態を1回だけ読み取る（生の evaluate 呼び出し）。
+
+    5016で判明したバグ対策:
+    text-fallback の texts[i],texts[i+1] 機械的ペアリングは、
+    チャートタイトル等の余分テキストノードが挟まると全体がオフバイワンでズレ、
+    GapUp/GapDown/Cont/Sumのキーが値側に紛れ込み extract 側で拾えなくなる。
+    → 位置ベースをやめ、既知ラベル文字列（anchor_keys）に完全一致するノードを
+      見つけ、その直後ノードを値として取る「キーワード・アンカー方式」に変更。
+      ラベル→値の隣接関係はDOM構造上必ず保たれるため、前段のズレに影響されない。
+    """
+    return await page.evaluate("""
+    (anchorKeys) => {
         const selectors = [
             '[class*="dataWindow"]',
             '[class*="data-window"]',
@@ -132,18 +154,117 @@ async def scrape_data_window(page) -> list:
             const t = node.textContent.trim();
             if (t) texts.push(t);
         }
+
+        // キーワード・アンカー方式: 既知ラベルに完全一致するノードの
+        // 直後ノードを値として取得（位置ズレの影響を受けない）
+        const anchorItems = [];
+        const seenAnchor = new Set();
+        for (let i = 0; i < texts.length - 1; i++) {
+            const label = texts[i];
+            if (anchorKeys.includes(label) && !seenAnchor.has(label)) {
+                seenAnchor.add(label);
+                anchorItems.push([label, texts[i + 1]]);
+            }
+        }
+        if (anchorItems.length > 0) {
+            return { found: true, selector: 'text-fallback-anchored', items: anchorItems };
+        }
+
+        // アンカー方式で何も拾えなかった場合のみ、旧・位置ベースにフォールバック
         for (let i = 0; i + 1 < texts.length; i += 2) {
             items.push([texts[i], texts[i+1]]);
         }
-        return { found: true, selector: 'text-fallback', items };
+        return { found: true, selector: 'text-fallback-positional', items };
     }
-    """)
+    """, anchor_keys)
 
-    if not result["found"]:
-        print("  ⚠ データウィンドウ コンテナ未検出")
-        return []
-    print(f"  データウィンドウ: {result['selector']} / {len(result['items'])}行")
-    return result["items"]
+
+async def scrape_data_window(page) -> list:
+    """
+    Endキーで最終バーへ移動 → Data Windowを取得。
+
+    5016銘柄で判明した不具合対策:
+    固定800ms待機だと、銘柄によっては再計算・再描画が間に合わず
+    GapUp/GapDown/Cont/Sumが軒並み0や∅（未反映状態）のまま
+    取得してしまうことがあった。
+    → 「2回連続で同じ値が取れる」まで一定間隔でポーリングし、
+      値が安定してから確定させる方式に変更。
+    """
+    await page.keyboard.press("End")
+    await page.wait_for_timeout(DW_INITIAL_WAIT_MS)
+
+    prev_items = None
+    prev_selector = None
+    stable_count = 0
+    final_items, final_selector = [], None
+
+    for attempt in range(1, DW_MAX_ATTEMPTS + 1):
+        result = await _read_data_window_raw(page)
+
+        if not result["found"]:
+            # コンテナ自体が見えない → もう少し待って再挑戦
+            await page.wait_for_timeout(DW_POLL_INTERVAL_MS)
+            continue
+
+        items = result["items"]
+        selector = result["selector"]
+
+        if prev_items is not None and items == prev_items:
+            stable_count += 1
+        else:
+            stable_count = 0
+
+        prev_items, prev_selector = items, selector
+
+        if stable_count >= DW_STABLE_CHECKS - 1:
+            final_items, final_selector = items, selector
+            print(f"  データウィンドウ: {selector} / {len(items)}行 "
+                  f"(安定確認 attempt={attempt})")
+            return final_items
+
+        await page.wait_for_timeout(DW_POLL_INTERVAL_MS)
+
+    # 安定しなかった場合は最後に読めた値をそのまま使う（無いよりまし）
+    if prev_items is not None:
+        print(f"  ⚠ データウィンドウ 値が安定しないまま最大試行回数に到達 "
+              f"({prev_selector} / {len(prev_items)}行) → 最終値を使用")
+        return prev_items
+
+    print("  ⚠ データウィンドウ コンテナ未検出")
+    return []
+
+
+def _dw_items_to_dict(dw_data: list) -> dict:
+    return {k: v for k, v in dw_data}
+
+
+def _to_number(v: str) -> float:
+    if v is None:
+        return 0.0
+    v = str(v).strip().replace(",", "").replace("∅", "0").replace("円", "").replace("%", "")
+    v = v.replace("−", "-")  # 全角マイナス対応
+    try:
+        return float(v)
+    except ValueError:
+        return 0.0
+
+
+def is_dw_consistent(strategy_data: list, dw_data: list) -> bool:
+    """
+    Strategy TesterとData Windowの整合性チェック。
+    総損益が0でないのにSum(陽+陰)=0（=トレード数0扱い）なら、
+    Data Windowがまだ反映される前の状態を取得してしまった疑いが強い。
+    """
+    strategy = dict(strategy_data)
+    dw = _dw_items_to_dict(dw_data)
+
+    net_profit = _to_number(strategy.get("総損益", "0"))
+    sum_win = _to_number(dw.get("Sum 陽", "0"))
+    sum_lose = _to_number(dw.get("Sum 陰", "0"))
+
+    if net_profit != 0 and (sum_win + sum_lose) == 0:
+        return False
+    return True
 
 async def main():
     symbols = load_symbols()
@@ -180,6 +301,20 @@ async def main():
 
                 strategy_data = await scrape_strategy(page)
                 dw_data       = await scrape_data_window(page)
+
+                # 総損益はあるのにトレード数0扱い → Data Windowが未反映の疑い
+                # → 銘柄を再度切り替えて取り直す
+                retry_count = 0
+                while not is_dw_consistent(strategy_data, dw_data) and retry_count < SYMBOL_MAX_RETRIES:
+                    retry_count += 1
+                    print(f"  ⚠ 整合性チェック失敗（総損益あり/トレード数0）→ 再取得 {retry_count}/{SYMBOL_MAX_RETRIES}")
+                    await switch_symbol(page, symbol)
+                    await wait_for_chart_update(page, symbol)
+                    strategy_data = await scrape_strategy(page)
+                    dw_data       = await scrape_data_window(page)
+
+                if not is_dw_consistent(strategy_data, dw_data):
+                    print("  ✗ 再取得後も整合性NG → 手動確認が必要")
 
                 if strategy_data or dw_data:
                     save_csv(strategy_data, dw_data, symbol)
