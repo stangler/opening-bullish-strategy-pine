@@ -3,50 +3,92 @@ strategy("寄付強気戦略",
      overlay=true, process_orders_on_close=true)
 
 // 入力
-gap_threshold_pct = input.float(1.0, "ギャップ閾値（%）")
-showTable         = input.bool(true,  "レポートテーブル表示", group="レポート設定")
-max_trades        = input.int(1000, "集計上限トレード数", minval=1, group="レポート設定")
+session_mode         = input.string("両方", "対象セッション", options=["前場のみ", "後場のみ", "両方"])
+gap_threshold_pct    = input.float(1.0, "前場ギャップ閾値（%）（前日終値比）")
+pm_gap_threshold_pct = input.float(0.3, "後場ギャップ閾値（%）（前場終値比）")
+showTable            = input.bool(true,  "レポートテーブル表示", group="レポート設定")
+max_trades           = input.int(1000, "集計上限トレード数（前場・後場それぞれ）", minval=1, group="レポート設定")
 
 // 基本
 // ※ 対応時間足: 1分・3分・5分・30分
-//   いずれも前場寄り付き（09:00）の最初の1本をエントリー → 同足クローズ
-gap_th         = gap_threshold_pct / 100.0
+//   前場寄り付き（09:00）／後場寄り付き（12:30）の最初の1本をエントリー → 同足クローズ
+//   前場ギャップ = 当日始値 vs 前日終値
+//   後場ギャップ = 後場始値 vs 前場終値（11:30までの最後の足の終値）
+gap_th    = gap_threshold_pct    / 100.0
+pm_gap_th = pm_gap_threshold_pct / 100.0
 prev_day_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
 
-// 前場寄り付き: 当日09:00以降の最初の足
-var bool am_fired_today = false
+trade_am = session_mode != "後場のみ"
+trade_pm = session_mode != "前場のみ"
+
+// 時刻（分換算）: 前場 09:00〜11:29 / 後場 12:30〜
+AM_START_MIN = 9 * 60
+PM_START_MIN = 12 * 60 + 30
+tod = hour * 60 + minute
+in_am_session = tod >= AM_START_MIN and tod < PM_START_MIN
+in_pm_session = tod >= PM_START_MIN
+
+var bool  am_fired_today = false
+var bool  pm_fired_today = false
+var float am_last_close  = na   // 前場の最後の足の終値（= 前場終値）
 
 if timeframe.change("D")
     am_fired_today := false
+    pm_fired_today := false
+    am_last_close  := na
 
-is_am_open = not am_fired_today and hour >= 9 and hour < 12
-
+// 前場寄り付き: 当日09:00以降の最初の足
+is_am_open = trade_am and not am_fired_today and in_am_session
 if is_am_open
     am_fired_today := true
 
-var float am_gap_pct = na
-if is_am_open
-    am_gap_pct := (open - prev_day_close) / prev_day_close
+// 後場寄り付き: 12:30以降の最初の足（前場終値が取れている日のみ）
+is_pm_open = trade_pm and not pm_fired_today and in_pm_session and not na(am_last_close)
+if is_pm_open
+    pm_fired_today := true
+
+float am_gap_pct = is_am_open ? (open - prev_day_close) / prev_day_close : na
+float pm_gap_pct = is_pm_open ? (open - am_last_close)  / am_last_close  : na
 
 am_gap_up   = not na(am_gap_pct) and am_gap_pct >  gap_th
 am_gap_down = not na(am_gap_pct) and am_gap_pct < -gap_th
-am_cont     = not na(am_gap_pct) and not am_gap_up and not am_gap_down
 am_bull     = close > open
+
+pm_gap_up   = not na(pm_gap_pct) and pm_gap_pct >  pm_gap_th
+pm_gap_down = not na(pm_gap_pct) and pm_gap_pct < -pm_gap_th
+pm_bull     = close > open
+
+// 前場終値の更新（前場中の足ごとに上書き → 最後の足の終値が残る）
+if in_am_session
+    am_last_close := close
 
 // エントリー / エグジット（同足クローズ）
 if is_am_open
     strategy.entry("AM", strategy.long)
     strategy.close("AM", immediately=true)
 
-// === 配列蓄積 (AM) ===
+if is_pm_open
+    strategy.entry("PM", strategy.long)
+    strategy.close("PM", immediately=true)
+
+// === 配列蓄積 (AM / PM) ===
 var array<int>   am_arr_pat  = array.new<int>()
 var array<int>   am_arr_bull = array.new<int>()
 var array<float> am_arr_pnl  = array.new<float>()
+
+var array<int>   pm_arr_pat  = array.new<int>()
+var array<int>   pm_arr_bull = array.new<int>()
+var array<float> pm_arr_pnl  = array.new<float>()
 
 if is_am_open
     array.push(am_arr_pat,  am_gap_up ? 0 : (am_gap_down ? 1 : 2))
     array.push(am_arr_bull, am_bull ? 1 : 0)
     array.push(am_arr_pnl,  close - open)
+
+if is_pm_open
+    array.push(pm_arr_pat,  pm_gap_up ? 0 : (pm_gap_down ? 1 : 2))
+    array.push(pm_arr_bull, pm_bull ? 1 : 0)
+    array.push(pm_arr_pnl,  close - open)
 
 // === 直近N件集計関数 ===
 f_calc(pat_arr, bull_arr, pnl_arr, n) =>
@@ -77,18 +119,75 @@ f_calc(pat_arr, bull_arr, pnl_arr, n) =>
                 co_bear += b == 0 ? 1 : 0
     [gu_bull, gu_bear, gu_pnl, gd_bull, gd_bear, gd_pnl, co_bull, co_bear, co_pnl]
 
+// === パターン別 総利益・総損失（PF算出用）===
+// 戻り値: [GU利益, GU損失, GD利益, GD損失, Cont利益, Cont損失]（損失は負値）
+f_gp_gl(pat_arr, pnl_arr, n) =>
+    int   sz    = array.size(pat_arr)
+    float gu_gp = 0.0, gu_gl = 0.0
+    float gd_gp = 0.0, gd_gl = 0.0
+    float co_gp = 0.0, co_gl = 0.0
+    if sz > 0
+        int start_i = math.max(0, sz - n)
+        for i = start_i to sz - 1
+            int   p = array.get(pat_arr, i)
+            float v = array.get(pnl_arr, i)
+            if p == 0
+                gu_gp += v > 0 ? v : 0.0
+                gu_gl += v < 0 ? v : 0.0
+            else if p == 1
+                gd_gp += v > 0 ? v : 0.0
+                gd_gl += v < 0 ? v : 0.0
+            else
+                co_gp += v > 0 ? v : 0.0
+                co_gl += v < 0 ? v : 0.0
+    [gu_gp, gu_gl, gd_gp, gd_gl, co_gp, co_gl]
+
 // === 集計結果変数（最終バーで更新）===
 var int   dw_am_gu_bull = 0,  dw_am_gu_bear = 0
 var int   dw_am_gd_bull = 0,  dw_am_gd_bear = 0
 var int   dw_am_co_bull = 0,  dw_am_co_bear = 0
 var float dw_am_gu_pnl  = 0.0, dw_am_gd_pnl = 0.0, dw_am_co_pnl = 0.0
 
+var int   dw_pm_gu_bull = 0,  dw_pm_gu_bear = 0
+var int   dw_pm_gd_bull = 0,  dw_pm_gd_bear = 0
+var int   dw_pm_co_bull = 0,  dw_pm_co_bear = 0
+var float dw_pm_gu_pnl  = 0.0, dw_pm_gd_pnl = 0.0, dw_pm_co_pnl = 0.0
+
+var float dw_am_gu_gp = 0.0, dw_am_gu_gl = 0.0
+var float dw_am_gd_gp = 0.0, dw_am_gd_gl = 0.0
+var float dw_am_co_gp = 0.0, dw_am_co_gl = 0.0
+var float dw_pm_gu_gp = 0.0, dw_pm_gu_gl = 0.0
+var float dw_pm_gd_gp = 0.0, dw_pm_gd_gl = 0.0
+var float dw_pm_co_gp = 0.0, dw_pm_co_gl = 0.0
+
 [ag_b, ag_r, ag_p, ad_b, ad_r, ad_p, ac_b, ac_r, ac_p] = f_calc(am_arr_pat, am_arr_bull, am_arr_pnl, max_trades)
+[pg_b, pg_r, pg_p, pd_b, pd_r, pd_p, pc_b, pc_r, pc_p] = f_calc(pm_arr_pat, pm_arr_bull, pm_arr_pnl, max_trades)
 
 if barstate.islastconfirmedhistory or barstate.islast
     dw_am_gu_bull := ag_b,  dw_am_gu_bear := ag_r,  dw_am_gu_pnl := ag_p
     dw_am_gd_bull := ad_b,  dw_am_gd_bear := ad_r,  dw_am_gd_pnl := ad_p
     dw_am_co_bull := ac_b,  dw_am_co_bear := ac_r,  dw_am_co_pnl := ac_p
+    dw_pm_gu_bull := pg_b,  dw_pm_gu_bear := pg_r,  dw_pm_gu_pnl := pg_p
+    dw_pm_gd_bull := pd_b,  dw_pm_gd_bear := pd_r,  dw_pm_gd_pnl := pd_p
+    dw_pm_co_bull := pc_b,  dw_pm_co_bear := pc_r,  dw_pm_co_pnl := pc_p
+
+    // 総利益・総損失は最終バーでのみ計算（ループ負荷を避ける）
+    [a_gu_gp, a_gu_gl, a_gd_gp, a_gd_gl, a_co_gp, a_co_gl] = f_gp_gl(am_arr_pat, am_arr_pnl, max_trades)
+    [p_gu_gp, p_gu_gl, p_gd_gp, p_gd_gl, p_co_gp, p_co_gl] = f_gp_gl(pm_arr_pat, pm_arr_pnl, max_trades)
+    dw_am_gu_gp := a_gu_gp, dw_am_gu_gl := a_gu_gl
+    dw_am_gd_gp := a_gd_gp, dw_am_gd_gl := a_gd_gl
+    dw_am_co_gp := a_co_gp, dw_am_co_gl := a_co_gl
+    dw_pm_gu_gp := p_gu_gp, dw_pm_gu_gl := p_gu_gl
+    dw_pm_gd_gp := p_gd_gp, dw_pm_gd_gl := p_gd_gl
+    dw_pm_co_gp := p_co_gp, dw_pm_co_gl := p_co_gl
+
+// 前場・後場の合計（Sum = 3パターン合計、Total = 前場+後場）
+int am_sum_bull = dw_am_gu_bull + dw_am_gd_bull + dw_am_co_bull
+int am_sum_bear = dw_am_gu_bear + dw_am_gd_bear + dw_am_co_bear
+int pm_sum_bull = dw_pm_gu_bull + dw_pm_gd_bull + dw_pm_co_bull
+int pm_sum_bear = dw_pm_gu_bear + dw_pm_gd_bear + dw_pm_co_bear
+int tot_bull    = am_sum_bull + pm_sum_bull
+int tot_bear    = am_sum_bear + pm_sum_bear
 
 // === テーブル描画関数 ===
 f_wr(bull, bear) =>
@@ -102,7 +201,7 @@ f_row(tbl, row, lbl, bull, bear, bg) =>
     table.cell(tbl, 3, row, f_wr(bull, bear), bgcolor=bg, text_color=color.white, text_size=size.normal)
 
 // === メイン表 ===
-var table mainTable = table.new(position.top_right, 4, 17,
+var table mainTable = table.new(position.top_right, 4, 22,
      bgcolor=color.new(color.gray, 90), border_width=1,
      frame_color=color.gray, border_color=color.new(color.gray, 60))
 
@@ -116,13 +215,27 @@ if showTable and (barstate.islastconfirmedhistory or barstate.islast)
     int row = 1
 
     color C_AM = color.new(#1b5e20, 30)
-    f_row(mainTable, row, "GapUp",   dw_am_gu_bull, dw_am_gu_bear, C_AM)
+    f_row(mainTable, row, "AM GapUp",   dw_am_gu_bull, dw_am_gu_bear, C_AM)
     row += 1
-    f_row(mainTable, row, "GapDown", dw_am_gd_bull, dw_am_gd_bear, C_AM)
+    f_row(mainTable, row, "AM GapDown", dw_am_gd_bull, dw_am_gd_bear, C_AM)
     row += 1
-    f_row(mainTable, row, "Cont",    dw_am_co_bull, dw_am_co_bear, C_AM)
+    f_row(mainTable, row, "AM Cont",    dw_am_co_bull, dw_am_co_bear, C_AM)
     row += 1
-    f_row(mainTable, row, "Sum", dw_am_gu_bull+dw_am_gd_bull+dw_am_co_bull, dw_am_gu_bear+dw_am_gd_bear+dw_am_co_bear, C_AM)
+    f_row(mainTable, row, "AM Sum",     am_sum_bull,   am_sum_bear,   C_AM)
+    row += 1
+
+    color C_PM = color.new(#0d47a1, 30)
+    f_row(mainTable, row, "PM GapUp",   dw_pm_gu_bull, dw_pm_gu_bear, C_PM)
+    row += 1
+    f_row(mainTable, row, "PM GapDown", dw_pm_gd_bull, dw_pm_gd_bear, C_PM)
+    row += 1
+    f_row(mainTable, row, "PM Cont",    dw_pm_co_bull, dw_pm_co_bear, C_PM)
+    row += 1
+    f_row(mainTable, row, "PM Sum",     pm_sum_bull,   pm_sum_bear,   C_PM)
+    row += 1
+
+    color C_TOT = color.new(#37474f, 0)
+    f_row(mainTable, row, "Total", tot_bull, tot_bear, C_TOT)
     row += 1
 
     color C_STATS = color.new(#4a148c, 30)
@@ -130,10 +243,9 @@ if showTable and (barstate.islastconfirmedhistory or barstate.islast)
         table.cell(mainTable, c, row, c == 0 ? "Strategy Stats" : "", bgcolor=color.new(#455a64, 0), text_color=color.white, text_size=size.normal)
     row += 1
 
-    int   total_trades = math.min(array.size(am_arr_pat), max_trades)
-    int   sum_bull     = dw_am_gu_bull + dw_am_gd_bull + dw_am_co_bull
-    int   sum_bear     = dw_am_gu_bear + dw_am_gd_bear + dw_am_co_bear
-    float sum_pnl      = dw_am_gu_pnl  + dw_am_gd_pnl  + dw_am_co_pnl
+    int   total_trades = tot_bull + tot_bear
+    int   sum_bull     = tot_bull
+    int   sum_bear     = tot_bear
     float win_rate     = total_trades > 0 ? float(sum_bull) / float(total_trades) * 100 : 0.0
     float max_dd_amount = strategy.max_drawdown
     float max_dd_pct    = strategy.initial_capital > 0 ? (strategy.max_drawdown / strategy.initial_capital) * 100 : na
@@ -179,18 +291,62 @@ if showTable and (barstate.islastconfirmedhistory or barstate.islast)
 // === データウィンドウ出力 ===
 f_dw_wr(bull, bear) => bull + bear > 0 ? float(bull) / float(bull + bear) * 100 : na
 
-plot(dw_am_gu_bull,                                                    title="GapUp 陽",   display=display.data_window)
-plot(dw_am_gu_bear,                                                    title="GapUp 陰",   display=display.data_window)
-plot(f_dw_wr(dw_am_gu_bull, dw_am_gu_bear),                           title="GapUp 勝率%", display=display.data_window)
+// --- 前場（AM）: 既存の項目名をそのまま維持 ---
+plot(dw_am_gu_bull,                          title="GapUp 陽",     display=display.data_window)
+plot(dw_am_gu_bear,                          title="GapUp 陰",     display=display.data_window)
+plot(f_dw_wr(dw_am_gu_bull, dw_am_gu_bear),  title="GapUp 勝率%",  display=display.data_window)
 
-plot(dw_am_gd_bull,                                                    title="GapDown 陽",   display=display.data_window)
-plot(dw_am_gd_bear,                                                    title="GapDown 陰",   display=display.data_window)
-plot(f_dw_wr(dw_am_gd_bull, dw_am_gd_bear),                           title="GapDown 勝率%", display=display.data_window)
+plot(dw_am_gd_bull,                          title="GapDown 陽",     display=display.data_window)
+plot(dw_am_gd_bear,                          title="GapDown 陰",     display=display.data_window)
+plot(f_dw_wr(dw_am_gd_bull, dw_am_gd_bear),  title="GapDown 勝率%",  display=display.data_window)
 
-plot(dw_am_co_bull,                                                    title="Cont 陽",   display=display.data_window)
-plot(dw_am_co_bear,                                                    title="Cont 陰",   display=display.data_window)
-plot(f_dw_wr(dw_am_co_bull, dw_am_co_bear),                           title="Cont 勝率%", display=display.data_window)
+plot(dw_am_co_bull,                          title="Cont 陽",     display=display.data_window)
+plot(dw_am_co_bear,                          title="Cont 陰",     display=display.data_window)
+plot(f_dw_wr(dw_am_co_bull, dw_am_co_bear),  title="Cont 勝率%",  display=display.data_window)
 
-plot(dw_am_gu_bull + dw_am_gd_bull + dw_am_co_bull,                   title="Sum 陽",   display=display.data_window)
-plot(dw_am_gu_bear + dw_am_gd_bear + dw_am_co_bear,                   title="Sum 陰",   display=display.data_window)
-plot(f_dw_wr(dw_am_gu_bull+dw_am_gd_bull+dw_am_co_bull, dw_am_gu_bear+dw_am_gd_bear+dw_am_co_bear), title="Sum 勝率%", display=display.data_window)
+plot(am_sum_bull,                            title="Sum 陽",     display=display.data_window)
+plot(am_sum_bear,                            title="Sum 陰",     display=display.data_window)
+plot(f_dw_wr(am_sum_bull, am_sum_bear),      title="Sum 勝率%",  display=display.data_window)
+
+// --- 後場（PM）: 「PM 」プレフィックス付き ---
+plot(dw_pm_gu_bull,                          title="PM GapUp 陽",     display=display.data_window)
+plot(dw_pm_gu_bear,                          title="PM GapUp 陰",     display=display.data_window)
+plot(f_dw_wr(dw_pm_gu_bull, dw_pm_gu_bear),  title="PM GapUp 勝率%",  display=display.data_window)
+
+plot(dw_pm_gd_bull,                          title="PM GapDown 陽",     display=display.data_window)
+plot(dw_pm_gd_bear,                          title="PM GapDown 陰",     display=display.data_window)
+plot(f_dw_wr(dw_pm_gd_bull, dw_pm_gd_bear),  title="PM GapDown 勝率%",  display=display.data_window)
+
+plot(dw_pm_co_bull,                          title="PM Cont 陽",     display=display.data_window)
+plot(dw_pm_co_bear,                          title="PM Cont 陰",     display=display.data_window)
+plot(f_dw_wr(dw_pm_co_bull, dw_pm_co_bear),  title="PM Cont 勝率%",  display=display.data_window)
+
+plot(pm_sum_bull,                            title="PM Sum 陽",     display=display.data_window)
+plot(pm_sum_bear,                            title="PM Sum 陰",     display=display.data_window)
+plot(f_dw_wr(pm_sum_bull, pm_sum_bear),      title="PM Sum 勝率%",  display=display.data_window)
+
+// --- 前場+後場の合計 ---
+plot(tot_bull,                               title="Total 陽",     display=display.data_window)
+plot(tot_bear,                               title="Total 陰",     display=display.data_window)
+plot(f_dw_wr(tot_bull, tot_bear),            title="Total 勝率%",  display=display.data_window)
+
+// --- パターン別 損益（1株あたり価格差の合計。手数料・スリッページ除く）---
+plot(dw_am_gu_pnl, title="GapUp 損益",     display=display.data_window)
+plot(dw_am_gu_gp,  title="GapUp 総利益",   display=display.data_window)
+plot(dw_am_gu_gl,  title="GapUp 総損失",   display=display.data_window)
+plot(dw_am_gd_pnl, title="GapDown 損益",   display=display.data_window)
+plot(dw_am_gd_gp,  title="GapDown 総利益", display=display.data_window)
+plot(dw_am_gd_gl,  title="GapDown 総損失", display=display.data_window)
+plot(dw_am_co_pnl, title="Cont 損益",      display=display.data_window)
+plot(dw_am_co_gp,  title="Cont 総利益",    display=display.data_window)
+plot(dw_am_co_gl,  title="Cont 総損失",    display=display.data_window)
+
+plot(dw_pm_gu_pnl, title="PM GapUp 損益",     display=display.data_window)
+plot(dw_pm_gu_gp,  title="PM GapUp 総利益",   display=display.data_window)
+plot(dw_pm_gu_gl,  title="PM GapUp 総損失",   display=display.data_window)
+plot(dw_pm_gd_pnl, title="PM GapDown 損益",   display=display.data_window)
+plot(dw_pm_gd_gp,  title="PM GapDown 総利益", display=display.data_window)
+plot(dw_pm_gd_gl,  title="PM GapDown 総損失", display=display.data_window)
+plot(dw_pm_co_pnl, title="PM Cont 損益",      display=display.data_window)
+plot(dw_pm_co_gp,  title="PM Cont 総利益",    display=display.data_window)
+plot(dw_pm_co_gl,  title="PM Cont 総損失",    display=display.data_window)

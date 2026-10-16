@@ -6,12 +6,54 @@ STRATEGY_KEYS = [
     "プロフィットファクター",
 ]
 
-DW_KEYS = [
+DW_KEYS_AM = [
     "GapUp 陽", "GapUp 陰", "GapUp 勝率%",
     "GapDown 陽", "GapDown 陰", "GapDown 勝率%",
     "Cont 陽", "Cont 陰", "Cont 勝率%",
     "Sum 陽", "Sum 陰", "Sum 勝率%",
 ]
+
+DW_KEYS_PM = [
+    "PM GapUp 陽", "PM GapUp 陰", "PM GapUp 勝率%",
+    "PM GapDown 陽", "PM GapDown 陰", "PM GapDown 勝率%",
+    "PM Cont 陽", "PM Cont 陰", "PM Cont 勝率%",
+    "PM Sum 陽", "PM Sum 陰", "PM Sum 勝率%",
+]
+
+DW_KEYS_TOTAL = ["Total 陽", "Total 陰", "Total 勝率%"]
+
+PATTERNS = [f"{pre}{pat}" for pre in ("", "PM ") for pat in ("GapUp", "GapDown", "Cont")]
+
+# Pineが出力するパターン別損益（1株あたり価格差・手数料除く）
+DW_KEYS_PNL = [f"{b} {k}" for b in PATTERNS for k in ("損益", "総利益", "総損失")]
+
+DW_KEYS = DW_KEYS_AM + DW_KEYS_PM + DW_KEYS_TOTAL + DW_KEYS_PNL
+
+# extractで計算する列（ロングはPine出力そのまま、ショートはロングの反転）
+DERIVED_KEYS = [f"{b} {k}" for b in PATTERNS
+                for k in ("ロングPF", "ショート勝率%", "ショート損益", "ショートPF")]
+
+def _num(v):
+    v = str(v).strip().replace(",", "").replace("∅", "0").replace("−", "-").replace("%", "")
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+def add_derived(data):
+    for b in PATTERNS:
+        bull, bear = _num(data.get(f"{b} 陽")), _num(data.get(f"{b} 陰"))
+        pnl = _num(data.get(f"{b} 損益"))
+        gp, gl = _num(data.get(f"{b} 総利益")), _num(data.get(f"{b} 総損失"))
+        if bull is not None and bear is not None and bull + bear > 0:
+            data[f"{b} ショート勝率%"] = f"{bear / (bull + bear) * 100:.1f}"
+        if pnl is not None:
+            data[f"{b} ショート損益"] = f"{-pnl:.2f}"
+        if gp is not None and gl is not None:
+            if gl != 0:
+                data[f"{b} ロングPF"] = f"{gp / abs(gl):.3f}"
+            if gp != 0:
+                data[f"{b} ショートPF"] = f"{abs(gl) / gp:.3f}"
 
 def extract_from_csv(csv_file):
     data = {}
@@ -60,13 +102,18 @@ def extract_from_csv(csv_file):
         except ValueError:
             return 0
 
-    win  = _int("Sum 陽")
-    lose = _int("Sum 陰")
+    # 前場+後場の合計（Total）を優先。旧版Pineで出力したCSV（Totalなし）は前場のSumで代用
+    if "Total 陽" in data or "Total 陰" in data:
+        win, lose = _int("Total 陽"), _int("Total 陰")
+        data["勝率"] = data.get("Total 勝率%", "")
+    else:
+        win, lose = _int("Sum 陽"), _int("Sum 陰")
+        data["勝率"] = data.get("Sum 勝率%", "")
     data["勝ちトレード"] = str(win)
     data["負けトレード"] = str(lose)
     data["トレード総数"] = str(win + lose)
-    data["勝率"] = data.get("Sum 勝率%", "")
 
+    add_derived(data)
     return data
 
 def update_format_csv(csv_data_list, format_path="format.csv"):
@@ -75,7 +122,7 @@ def update_format_csv(csv_data_list, format_path="format.csv"):
         fieldnames = reader.fieldnames
         rows = list(reader)
 
-    all_keys = STRATEGY_KEYS + ["トレード総数", "勝ちトレード", "負けトレード", "勝率"] + DW_KEYS
+    all_keys = STRATEGY_KEYS + ["トレード総数", "勝ちトレード", "負けトレード", "勝率"] + DW_KEYS + DERIVED_KEYS
 
     for row in rows:
         symbol = (row.get("銘柄コード") or "").strip()

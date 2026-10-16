@@ -1,29 +1,34 @@
 # 寄付強気戦略 [Pine Script v6]
 
-09:00（前場寄り付き）の**始値で即エントリー**し、
+09:00（前場寄り付き）・12:30（後場寄り付き）の**始値で即エントリー**し、
 最初の1本確定で即エグジットする統計検証用ストラテジー。
 陽線判定を待たずエントリー → 結果的に陽線になったか・利益出たかを検証。
 
 ## 特徴
 
-- **時間足**: 5分足専用
-- **前場 AM** エントリー: 09:00 始値 → 09:05 終値でクローズ
-- **ギャップ判定**: 前日終値 vs 当日寄り付き始値（遅延寄り付き対応済み）
-- **3パターン別集計**: GapUp／GapDown／Cont × 陽線・陰線本数・勝率、**Sum行で合計表示**
+- **時間足**: 1分・3分・5分・30分に対応
+- **対象セッション**: 入力 `対象セッション` で「前場のみ／後場のみ／両方」を選択（デフォルト: 両方）
+- **前場 AM** エントリー: 09:00 始値 → 同足終値でクローズ
+- **後場 PM** エントリー: 12:30 始値 → 同足終値でクローズ
+- **前場ギャップ判定**: 前日終値 vs 当日寄り付き始値（閾値 `前場ギャップ閾値`、デフォルト1.0%）
+- **後場ギャップ判定**: 前場終値（11:30までの最後の足の終値）vs 後場寄り付き始値（閾値 `後場ギャップ閾値`、デフォルト0.3%）
+- **3パターン別集計**: GapUp／GapDown／Cont × 陽線・陰線本数・勝率、AM Sum・PM Sum・**Total（前場+後場）行で合計表示**
 - **Statsテーブル**: Net Profit・Gross Profit・Gross Loss・Profit Factor・Win Rate・Total/Win/Loss Trades・Max DD(金額/%)・DD/Profit Ratio を同一テーブルに縦ドッキング表示
 - **データウィンドウ出力**: パターン別集計値（陽/陰/勝率%）をデータウィンドウにも表示
-- **直近N件管理**: `max_trades`（デフォルト30）で直近件数を指定
+- **直近N件管理**: `max_trades`（デフォルト1000）で直近件数を指定（前場・後場それぞれ）
 
 ## エントリー/エグジット ロジック
 
-1. `am_fired_today` フラグで当日 `hour >= 9` の最初の足を捕捉 → `strategy.entry("AM")`
-2. 同足で `strategy.close("AM", immediately=true)`
-3. 前日 `close[1]`（日足）vs 当日寄り付き `open` → ギャップ率計算
-4. 買い気配等で09:00に寄り付かない場合も、実際に寄り付いた足を正しく捕捉
+1. `am_fired_today` フラグで当日 09:00〜12:29 の最初の足を捕捉 → `strategy.entry("AM")`
+2. `pm_fired_today` フラグで当日 12:30以降の最初の足を捕捉 → `strategy.entry("PM")`（前場終値が取れた日のみ）
+3. 各エントリーと同足で `strategy.close(..., immediately=true)`
+4. 前場ギャップ: 前日 `close[1]`（日足）vs 当日寄り付き `open`
+5. 後場ギャップ: 前場の最後の足の終値 vs 後場寄り付き `open`
+6. 買い気配等で寄り付かない場合も、実際に寄り付いた足を正しく捕捉
 
 ## 統計テーブル（右上表示）
 
-- **集計セクション**: GapUp・GapDown・Cont × 陽/陰 本数・勝率、**Sum行（3パターン合計）**
+- **集計セクション**: AM／PM それぞれ GapUp・GapDown・Cont × 陽/陰 本数・勝率、Sum行（3パターン合計）、**Total行（前場+後場）**
 - **Strategy Stats セクション**: Net Profit・Gross Profit・Gross Loss・Profit Factor・Win Rate %・Total/Win/Loss Trades・Max Drawdown %・Max Drawdown (金額)・DD/Profit Ratio
 
 ## データウィンドウ出力
@@ -35,21 +40,24 @@
 
 | 項目 | 内容 |
 |------|------|
-| `GapUp/GapDown/Cont/Sum 陽` | 陽線本数 |
-| `GapUp/GapDown/Cont/Sum 陰` | 陰線本数 |
-| `GapUp/GapDown/Cont/Sum 勝率%` | 勝率（%） |
+| `GapUp/GapDown/Cont/Sum 陽` | 前場の陽線本数 |
+| `GapUp/GapDown/Cont/Sum 陰` | 前場の陰線本数 |
+| `GapUp/GapDown/Cont/Sum 勝率%` | 前場の勝率（%） |
+| `PM GapUp/GapDown/Cont/Sum 陽・陰・勝率%` | 後場の同項目 |
+| `Total 陽・陰・勝率%` | 前場+後場の合計 |
+| `[PM ]GapUp/GapDown/Cont 損益・総利益・総損失` | パターン別の損益（1株あたり価格差の合計、手数料・スリッページ除く。総損失は負値） |
 
 ## 使い方
 
-1. TradingView → 5分足に設定
+1. TradingView → 1分・3分・5分・30分足のいずれかに設定
 2. Pineエディタ貼付 → チャートに追加
-3. 入力設定で `max_trades`（直近件数）を調整
+3. 入力設定で `対象セッション`・各ギャップ閾値・`max_trades` を調整
 4. 戦略テスターで純利益・ギャップ別統計を確認
 
 ### 推奨設定
 
 - スリッページ: 1〜2（成行のため）
-- `max_trades`: 30（直近30件）
+- `max_trades`: 1000（全期間に近い件数）
 
 ## スクレイパー構成
 
@@ -124,7 +132,14 @@ python extract_data.py
 |-----------|------|
 | Strategy Tester | 総損益・最大ドローダウン・プロフィットファクター |
 | Data Window（計算） | トレード総数・勝ちトレード・負けトレード・勝率 |
-| Data Window | GapUp/GapDown/Cont/Sum × 陽/陰/勝率%（12項目） |
+| Data Window（前場） | GapUp/GapDown/Cont/Sum × 陽/陰/勝率%（12項目） |
+| Data Window（後場） | PM GapUp/PM GapDown/PM Cont/PM Sum × 陽/陰/勝率%（12項目） |
+| Data Window（合計） | Total 陽/陰/勝率%（トレード総数・勝ち・負け・勝率の算出に使用） |
+
+| 計算列（extract） | 各パターンの ロングPF・ショート勝率%・ショート損益・ショートPF（ショート＝ロングの反転、コスト除く） |
+
+※ パターン別損益は価格差×1株ベース。Strategy Testerの総損益と一致するのは数量1株・コスト0のときのみ。
+※ `Total` が無い旧版Pineで出力したCSVは、前場の `Sum` で代用して転記する。
 
 ### format.csv
 
@@ -146,5 +161,5 @@ python extract_data.py
 
 ---
 
-**Version**: 5.0（5分足専用・前場のみ・max_trades方式）  
+**Version**: 6.0（前場・後場対応・max_trades方式）  
 **License**: MIT

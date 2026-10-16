@@ -98,10 +98,23 @@ async def scrape_strategy(page) -> list:
     """, keywords)
 
 DW_ANCHOR_KEYS = [
+    # 前場（AM）
     "GapUp 陽", "GapUp 陰", "GapUp 勝率%",
     "GapDown 陽", "GapDown 陰", "GapDown 勝率%",
     "Cont 陽", "Cont 陰", "Cont 勝率%",
     "Sum 陽", "Sum 陰", "Sum 勝率%",
+    # 後場（PM）
+    "PM GapUp 陽", "PM GapUp 陰", "PM GapUp 勝率%",
+    "PM GapDown 陽", "PM GapDown 陰", "PM GapDown 勝率%",
+    "PM Cont 陽", "PM Cont 陰", "PM Cont 勝率%",
+    "PM Sum 陽", "PM Sum 陰", "PM Sum 勝率%",
+    # 前場+後場の合計
+    "Total 陽", "Total 陰", "Total 勝率%",
+] + [
+    f"{pre}{pat} {kind}"
+    for pre in ("", "PM ")
+    for pat in ("GapUp", "GapDown", "Cont")
+    for kind in ("損益", "総利益", "総損失")
 ]
 
 async def _read_data_window_raw(page, anchor_keys=DW_ANCHOR_KEYS) -> dict:
@@ -252,17 +265,23 @@ def _to_number(v: str) -> float:
 def is_dw_consistent(strategy_data: list, dw_data: list) -> bool:
     """
     Strategy TesterとData Windowの整合性チェック。
-    総損益が0でないのにSum(陽+陰)=0（=トレード数0扱い）なら、
+    総損益が0でないのにTotal(陽+陰)=0（=トレード数0扱い）なら、
     Data Windowがまだ反映される前の状態を取得してしまった疑いが強い。
     """
     strategy = dict(strategy_data)
     dw = _dw_items_to_dict(dw_data)
 
     net_profit = _to_number(strategy.get("総損益", "0"))
-    sum_win = _to_number(dw.get("Sum 陽", "0"))
-    sum_lose = _to_number(dw.get("Sum 陰", "0"))
 
-    if net_profit != 0 and (sum_win + sum_lose) == 0:
+    # 前場+後場の合計(Total)を優先。Totalが無い旧版Pineの場合は前場のSumで判定
+    if "Total 陽" in dw or "Total 陰" in dw:
+        total_win = _to_number(dw.get("Total 陽", "0"))
+        total_lose = _to_number(dw.get("Total 陰", "0"))
+    else:
+        total_win = _to_number(dw.get("Sum 陽", "0"))
+        total_lose = _to_number(dw.get("Sum 陰", "0"))
+
+    if net_profit != 0 and (total_win + total_lose) == 0:
         return False
     return True
 
