@@ -115,7 +115,7 @@ DW_ANCHOR_KEYS = [
     for pre in ("", "PM ")
     for pat in ("GapUp", "GapDown", "Cont")
     for kind in ("損益", "総利益", "総損失")
-]
+] + ["損益検算差", "Tester取引数"]
 
 async def _read_data_window_raw(page, anchor_keys=DW_ANCHOR_KEYS) -> dict:
     """

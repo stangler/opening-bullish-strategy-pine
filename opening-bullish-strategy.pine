@@ -1,11 +1,12 @@
 //@version=6
 strategy("寄付強気戦略",
-     overlay=true, process_orders_on_close=true)
+     overlay=true, process_orders_on_close=false)
 
 // 入力
 session_mode         = input.string("両方", "対象セッション", options=["前場のみ", "後場のみ", "両方"])
 gap_threshold_pct    = input.float(1.0, "前場ギャップ閾値（%）（前日終値比）")
 pm_gap_threshold_pct = input.float(0.3, "後場ギャップ閾値（%）（前場終値比）")
+close_min            = input.int(930, "大引け時刻（分換算。15:30=930、2024/11/4以前の15:00=900）", minval=1)
 showTable            = input.bool(true,  "レポートテーブル表示", group="レポート設定")
 max_trades           = input.int(1000, "集計上限トレード数（前場・後場それぞれ）", minval=1, group="レポート設定")
 
@@ -37,15 +38,33 @@ if timeframe.change("D")
     pm_fired_today := false
     am_last_close  := na
 
+// 寄り付きの1本前の足（買い注文を出す足）の判定
+tf_min  = int(timeframe.in_seconds() / 60)
+bar_end = tod + tf_min
+// 当日最後の足（TradingViewのセッション終了判定、または大引け時刻ちょうど）→ 翌営業日の前場寄りで約定
+// ※ 前場終了（11:30）で誤発火しないよう、後場の足に限定
+is_pre_am = trade_am and tod >= PM_START_MIN and (session.islastbar_regular or bar_end == close_min)
+is_pre_pm = trade_pm and bar_end == PM_START_MIN - 60  // 前場最後の足（11:30終了）→ 後場寄りで約定
+
+// 買い注文を出した場合のみ、次の寄り付きを集計対象にする（チャート先頭日など注文が出せない日を除外し、Testerと件数を揃える）
+var bool am_armed = false
+var bool pm_armed = false
+if is_pre_am
+    am_armed := true
+if is_pre_pm
+    pm_armed := true
+
 // 前場寄り付き: 当日09:00以降の最初の足
-is_am_open = trade_am and not am_fired_today and in_am_session
+is_am_open = trade_am and am_armed and not am_fired_today and in_am_session
 if is_am_open
     am_fired_today := true
+    am_armed := false
 
 // 後場寄り付き: 12:30以降の最初の足（前場終値が取れている日のみ）
-is_pm_open = trade_pm and not pm_fired_today and in_pm_session and not na(am_last_close)
+is_pm_open = trade_pm and pm_armed and not pm_fired_today and in_pm_session and not na(am_last_close)
 if is_pm_open
     pm_fired_today := true
+    pm_armed := false
 
 float am_gap_pct = is_am_open ? (open - prev_day_close) / prev_day_close : na
 float pm_gap_pct = is_pm_open ? (open - am_last_close)  / am_last_close  : na
@@ -62,13 +81,18 @@ pm_bull     = close > open
 if in_am_session
     am_last_close := close
 
-// エントリー / エグジット（同足クローズ）
-if is_am_open
+// エントリー / エグジット
+// ※ process_orders_on_close=true だと成行注文は「注文を出した足の終値」で約定し、
+//    始値エントリーにならない。そこで寄り付きの1本前の足で買い注文を出し、
+//    次の足の始値で約定させる。決済は寄り付きの足の終値（immediately=true）。
+if is_pre_am
     strategy.entry("AM", strategy.long)
-    strategy.close("AM", immediately=true)
-
-if is_pm_open
+if is_pre_pm
     strategy.entry("PM", strategy.long)
+
+if is_am_open
+    strategy.close("AM", immediately=true)
+if is_pm_open
     strategy.close("PM", immediately=true)
 
 // === 配列蓄積 (AM / PM) ===
@@ -350,3 +374,9 @@ plot(dw_pm_gd_gl,  title="PM GapDown 総損失", display=display.data_window)
 plot(dw_pm_co_pnl, title="PM Cont 損益",      display=display.data_window)
 plot(dw_pm_co_gp,  title="PM Cont 総利益",    display=display.data_window)
 plot(dw_pm_co_gl,  title="PM Cont 総損失",    display=display.data_window)
+
+// --- 検算: Strategy Testerの純損益 − パターン別損益の合計（数量1株・コスト0なら0になる）---
+plot(strategy.netprofit - (dw_am_gu_pnl + dw_am_gd_pnl + dw_am_co_pnl + dw_pm_gu_pnl + dw_pm_gd_pnl + dw_pm_co_pnl), title="損益検算差", display=display.data_window)
+
+// --- 診断: Strategy Testerの決済済みトレード数（前場+後場の件数と一致するはず）---
+plot(strategy.closedtrades, title="Tester取引数", display=display.data_window)

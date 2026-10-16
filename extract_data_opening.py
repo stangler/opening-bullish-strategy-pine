@@ -25,7 +25,7 @@ DW_KEYS_TOTAL = ["Total 陽", "Total 陰", "Total 勝率%"]
 PATTERNS = [f"{pre}{pat}" for pre in ("", "PM ") for pat in ("GapUp", "GapDown", "Cont")]
 
 # Pineが出力するパターン別損益（1株あたり価格差・手数料除く）
-DW_KEYS_PNL = [f"{b} {k}" for b in PATTERNS for k in ("損益", "総利益", "総損失")]
+DW_KEYS_PNL = [f"{b} {k}" for b in PATTERNS for k in ("損益", "総利益", "総損失")] + ["損益検算差", "Tester取引数"]
 
 DW_KEYS = DW_KEYS_AM + DW_KEYS_PM + DW_KEYS_TOTAL + DW_KEYS_PNL
 
