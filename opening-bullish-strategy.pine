@@ -1,6 +1,6 @@
 //@version=6
 strategy("寄付強気戦略",
-     overlay=true, process_orders_on_close=false)
+     overlay=true, process_orders_on_close=false, initial_capital=100000000)
 
 // 入力
 session_mode         = input.string("両方", "対象セッション", options=["前場のみ", "後場のみ", "両方"])
@@ -18,6 +18,9 @@ max_trades           = input.int(1000, "集計上限トレード数（前場・�
 gap_th    = gap_threshold_pct    / 100.0
 pm_gap_th = pm_gap_threshold_pct / 100.0
 prev_day_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+// 売買単位（株数）: 1570（日経レバ）は1株、それ以外は100株
+trade_qty = syminfo.ticker == "1570" ? 1 : 100
 
 trade_am = session_mode != "後場のみ"
 trade_pm = session_mode != "前場のみ"
@@ -86,9 +89,9 @@ if in_am_session
 //    始値エントリーにならない。そこで寄り付きの1本前の足で買い注文を出し、
 //    次の足の始値で約定させる。決済は寄り付きの足の終値（immediately=true）。
 if is_pre_am
-    strategy.entry("AM", strategy.long)
+    strategy.entry("AM", strategy.long, qty=trade_qty)
 if is_pre_pm
-    strategy.entry("PM", strategy.long)
+    strategy.entry("PM", strategy.long, qty=trade_qty)
 
 if is_am_open
     strategy.close("AM", immediately=true)
@@ -107,12 +110,12 @@ var array<float> pm_arr_pnl  = array.new<float>()
 if is_am_open
     array.push(am_arr_pat,  am_gap_up ? 0 : (am_gap_down ? 1 : 2))
     array.push(am_arr_bull, am_bull ? 1 : 0)
-    array.push(am_arr_pnl,  close - open)
+    array.push(am_arr_pnl,  (close - open) * trade_qty)
 
 if is_pm_open
     array.push(pm_arr_pat,  pm_gap_up ? 0 : (pm_gap_down ? 1 : 2))
     array.push(pm_arr_bull, pm_bull ? 1 : 0)
-    array.push(pm_arr_pnl,  close - open)
+    array.push(pm_arr_pnl,  (close - open) * trade_qty)
 
 // === 直近N件集計関数 ===
 f_calc(pat_arr, bull_arr, pnl_arr, n) =>
@@ -354,7 +357,7 @@ plot(tot_bull,                               title="Total 陽",     display=disp
 plot(tot_bear,                               title="Total 陰",     display=display.data_window)
 plot(f_dw_wr(tot_bull, tot_bear),            title="Total 勝率%",  display=display.data_window)
 
-// --- パターン別 損益（1株あたり価格差の合計。手数料・スリッページ除く）---
+// --- パターン別 損益（価格差×売買株数の合計。1570は1株、他は100株。手数料・スリッページ除く）---
 plot(dw_am_gu_pnl, title="GapUp 損益",     display=display.data_window)
 plot(dw_am_gu_gp,  title="GapUp 総利益",   display=display.data_window)
 plot(dw_am_gu_gl,  title="GapUp 総損失",   display=display.data_window)
@@ -375,7 +378,7 @@ plot(dw_pm_co_pnl, title="PM Cont 損益",      display=display.data_window)
 plot(dw_pm_co_gp,  title="PM Cont 総利益",    display=display.data_window)
 plot(dw_pm_co_gl,  title="PM Cont 総損失",    display=display.data_window)
 
-// --- 検算: Strategy Testerの純損益 − パターン別損益の合計（数量1株・コスト0なら0になる）---
+// --- 検算: Strategy Testerの純損益 − パターン別損益の合計（コスト0なら0になる）---
 plot(strategy.netprofit - (dw_am_gu_pnl + dw_am_gd_pnl + dw_am_co_pnl + dw_pm_gu_pnl + dw_pm_gd_pnl + dw_pm_co_pnl), title="損益検算差", display=display.data_window)
 
 // --- 診断: Strategy Testerの決済済みトレード数（前場+後場の件数と一致するはず）---
